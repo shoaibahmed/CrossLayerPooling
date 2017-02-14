@@ -8,7 +8,6 @@ This repository provides a basic implementation of Cross-layer pooling algorithm
 <li>Boost</li>
 <li>Pretrained ResNet-152-model.caffemodel (https://github.com/KaimingHe/deep-residual-networks)</li>
 </ol>
-<br/>
 
 <br/><b>TODOs: </b>
 <ol>
@@ -16,6 +15,5 @@ This repository provides a basic implementation of Cross-layer pooling algorithm
 <li>Add optimization</li>
 <li>Add code profiling</li>
 </ol>
-<br/>
 
 <br/><br/> Email: <b>12bscsssiddiqui@seecs.edu.pk</b>
