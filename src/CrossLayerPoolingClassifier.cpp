@@ -2,24 +2,21 @@
 
 CrossLayerPoolingClassifier::CrossLayerPoolingClassifier()
 {
-	// Initialize classifier
-	classifier = new Classifier();
 	feature_extractor = new FeatureExtractor(MODEL_FILE, TRAINED_FILE);
+	
+	#if PERFORM_PCA
+		// Initialize PCA object
+		pca = new cv::PCA();
 
-	// Load classifier if already trained model is present
-	classifier_loaded = classifier->loadClassifier();
-
-#if PERFORM_PCA
-	// Initialize PCA object
-	pca = new cv::PCA();
-
-	// Load PCA data if already saved
-	pca_data_loaded = loadPCAData();
-#endif
+		// Load PCA data if already saved
+		pca_data_loaded = loadPCAData();
+	#endif
 }
 
-void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
+void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir, std::string images_dir)
 {
+	std::cout << "Loading data" << std::endl;
+
 	// Read files from data directory
 	std::string images_file_name = data_dir + "images.txt";
 	std::string labels_file_name = data_dir + "image_class_labels.txt";
@@ -30,8 +27,8 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 	std::vector<std::string> image_files;
 	std::vector<int> image_labels;
 	std::vector<int> train_test_split;
-	std::vector<std::string> classes(NUM_CLASSES);
-	// std::vector<std::string> classes;
+	// std::vector<std::string> classes(NUM_CLASSES);
+	std::vector<std::string> classes;
 	
 	int num_training_examples = 0;
 	int num_validation_examples = 0;
@@ -52,7 +49,7 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 			#if DEBUG > 2
 				std::cout << "File: " << temp << std::endl; 
 			#endif
-			image_files.push_back(data_dir + "images/" + temp);
+			image_files.push_back(data_dir + images_dir + temp);
 		}
 
 		images_file.close();
@@ -135,12 +132,26 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 		std::ifstream classes_file(classes_file_name);
 		std::string line, temp;
 
+		int numClasses = 0;
+		while(std::getline(classes_file, line))
+			numClasses++;
+
+		classes = std::vector<std::string>(numClasses);
+
+		// Go to the start of file
+		classes_file.clear();
+		classes_file.seekg(0, ios::beg);
+
 		while(std::getline(classes_file, line))
 		{
 			// Ignore line number
 			std::istringstream iss(line);
-			iss >> temp; 
-			int class_index = stoi(temp) - 1;
+			iss >> temp;
+			#if ZERO_INDEXED_CLASSES
+				int class_index = stoi(temp);
+			#else
+				int class_index = stoi(temp) - 1;
+			#endif
 			iss >> temp;
 			
 			#if DEBUG > 2
@@ -161,6 +172,7 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 	// Print data stats
 	std::cout << "Data loaded successfully" << std::endl; 
 	std::cout << "==================================" << std::endl; 
+	std::cout << "Number of classes: " << classes.size() << std::endl; 
 	std::cout << "Training examples: " << num_training_examples << std::endl; 
 	std::cout << "Validation examples: " << num_validation_examples << std::endl; 
 	std::cout << "Test examples: " << num_test_examples << std::endl; 
@@ -172,23 +184,187 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 	std::cout << "==================================" << std::endl; 
 
 	// Load feature extractor for each of the images
-// #if PERFORM_PCA
-// 	int dim = feature_extractor->getCrossPooledFeaturesSize(NUM_COMP_PCA);
-// #else
-// 	int dim = feature_extractor->getCrossPooledFeaturesSize(0);
-// #endif
-	int dim = feature_extractor->getCrossPooledFeaturesSize(0);
+	#if PERFORM_PCA
+		int dim = feature_extractor->getCrossPooledFeaturesSize(NUM_COMP_PCA);
+	#else
+		int dim = feature_extractor->getCrossPooledFeaturesSize(0);
+	#endif
 
-	// cv::Mat data(cv::Size(num_training_examples + num_validation_examples + num_test_examples, dim), CV_32F);
-	cv::Mat data_train(num_training_examples, dim, CV_32F);
-	cv::Mat label_train(num_training_examples, 1, CV_32S);
-	cv::Mat data_val(num_validation_examples, dim, CV_32F);
-	cv::Mat label_val(num_validation_examples, 1, CV_32S);
-	cv::Mat data_test(num_test_examples, dim, CV_32F);
-	cv::Mat label_test(num_test_examples, 1, CV_32S);
+	// Initialize classifier
+	classifier = new Classifier(dim, classes.size());
 
-	int index_train = 0, index_val = 0, index_test = 0;
+	#if LOAD_CLASSIFIER
+		// Load classifier if already trained model is present
+		classifier_loaded = classifier->loadClassifier();
+	#else
+		classifier_loaded = false;
+	#endif
 
+	std::chrono::steady_clock::time_point start_time, end_time;
+
+	// Prior feature extraction is only needed in case of SVM
+	#if USE_SVM
+		cv::Mat data_train(num_training_examples, dim, CV_32F);
+		cv::Mat label_train(num_training_examples, 1, CV_32S);
+
+		int index_train = 0, index_val = 0, index_test = 0;
+
+		start_time = std::chrono::steady_clock::now();
+		// #pragma omp parallel for
+		for (int i = 0; i < image_files.size(); i++)
+		{
+			if (train_test_split[i] == TRAIN_EXAMPLE)
+			{
+				std::string file_name = image_files[i];
+				std::cout << "Processing file: " << file_name << std::endl;
+
+				// Read image
+				cv::Mat img = cv::imread(file_name);
+
+				if(img.empty())
+				{
+					std::cout << "Error: Unable to read file (" << file_name << ")" << std::endl;
+					// break;
+				}
+
+				#if DEBUG
+					cv::imshow("Image", img);
+					char c = cv::waitKey(100);
+					if (c == 'q')
+						break;
+				#endif
+
+				// Extract features
+				cv::Mat feature_vector;
+				feature_extractor->extractCrossPooledFeatures(img, feature_vector);
+
+				cv::Mat data_row;
+
+				data_row = data_train.row(index_train);
+				label_train.at<int>(index_train) = image_labels[i];
+				index_train++;
+				
+				// Copy extracted features to the feature mat
+				feature_vector.copyTo(data_row);
+			}
+		}
+
+		end_time = std::chrono::steady_clock::now();
+		std::cout << "Time taken for feature extraction: " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0 << " secs" << std::endl;
+
+		// Write extracted features to file
+		// cv::FileStorage file("features.txt", cv::FileStorage::WRITE);
+		// file << "f" << data;
+		// std::cout << "Features written to file" << std::endl;
+	#endif
+
+	#if PERFORM_PCA
+		start_time = std::chrono::steady_clock::now();
+		if(!pca_data_loaded)
+		{
+			std::cout << "Computing PCA matrix" << std::endl;
+
+			// Compute principle components
+			// pca = pca(data_train, // pass the data
+			// 	cv::Mat(), // we do not have a pre-computed mean vector,
+			// 	// so let the PCA engine to compute it
+			// 	cv::PCA::DATA_AS_ROW, // indicate that the vectors
+			// 	// are stored as matrix rows
+			// 	// (use PCA::DATA_AS_COL if the vectors are
+			// 	// the matrix columns)
+			// 	NUM_COMP_PCA // specify, how many principal components to retain
+			// );
+
+			PCA pca(data_train, Mat(), cv::PCA::DATA_AS_ROW, NUM_COMP_PCA);
+
+			// Write PCA matrix to file
+			savePCAData();
+		}
+		
+		// Compress data using computed PCA matrix
+		std::cout << "Training data: (" << data_train.rows << ", " << data_train.cols << ") => (";
+		pca->project(data_train, data_train);
+		std::cout << data_train.rows << ", " << data_train.cols << ")" << std::endl;
+
+		end_time = std::chrono::steady_clock::now();
+		std::cout << "Time taken for PCA: " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0 << " secs" << std::endl;
+	#endif
+
+	// Train classifier only if no previously saved model found
+	if(!classifier_loaded)
+	{
+		start_time = std::chrono::steady_clock::now();
+		std::cout << "Training classifier" << std::endl;
+
+		#if USE_SVM
+			// classifier->trainClassifier(data_train, label_train);
+			classifier->trainSVM(data_train, label_train);
+
+			// Test accuracy on validation and test set
+			std::cout << "Computing classifier's performance" << std::endl;
+
+			float train_acc = classifier->computeAccuracy(data_train, label_train);
+			std::cout << "Train set accuracy: " << train_acc * 100 << "\%" << std::endl;
+
+		#else
+			// Feed data directly to MLP
+			std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+			for (int i = 0; i < image_files.size(); i++)
+			{
+				if (train_test_split[i] == TRAIN_EXAMPLE)
+				{
+					std::string file_name = image_files[i];
+					std::cout << "Processing file: " << file_name << std::endl;
+
+					// Read image
+					cv::Mat img = cv::imread(file_name);
+
+					if(img.empty())
+					{
+						std::cout << "Error: Unable to read file (" << file_name << ")" << std::endl;
+						// break;
+					}
+
+					#if DEBUG
+						cv::imshow("Image", img);
+						char c = cv::waitKey(100);
+						if (c == 'q')
+							break;
+					#endif
+
+					// Extract features
+					cv::Mat feature_vector;
+					feature_extractor->extractCrossPooledFeatures(img, feature_vector);
+
+					// Convert mat to vec
+					tiny_dnn::vec_t vec_t_features;
+					Utils::convertMatToVector(feature_vector, vec_t_features);
+					std::vector<tiny_dnn::vec_t> vec_features = {vec_t_features};
+					std::vector<tiny_dnn::label_t> vec_labels = {image_labels[i]};
+
+					classifier->trainMLP(vec_features, vec_labels);
+				}
+			}
+
+			std::chrono::steady_clock::time_point end_time = std::chrono::steady_clock::now();
+			std::cout << "Time taken for feature extraction: " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0 << " secs" << std::endl;
+
+			// Save classifier
+			classifier->saveClassifier();
+		#endif
+
+		end_time = std::chrono::steady_clock::now();
+		std::cout << "Time taken for classifier training: " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0 << " secs" << std::endl;
+	}
+
+	std::cout << "Classifier training completed" << std::endl;
+
+	// Perform evaluation using direct feature extraction
+	start_time = std::chrono::steady_clock::now();
+	std::cout << "Starting classifier evaluation" << std::endl;
+	int num_correct_train = 0;
+	int num_correct_val = 0;
+	int num_correct_test = 0;
 	for (int i = 0; i < image_files.size(); i++)
 	{
 		std::string file_name = image_files[i];
@@ -210,112 +386,51 @@ void CrossLayerPoolingClassifier::trainClassifier(std::string data_dir)
 				break;
 		#endif
 
-		// Extract features
-		cv::Mat feature_vector;
-		feature_extractor->extractFeatures(img, feature_vector);
-
-		cv::Mat data_row;
-		if (train_test_split[i] == TRAIN_EXAMPLE)
-		{
-			data_row = data_train.row(index_train);
-			label_train.at<int>(index_train) = image_labels[i];
-			index_train++;
-		}
-		else if (train_test_split[i] == VALIDATION_EXAMPLE)
-		{
-			data_row = data_val.row(index_val);
-			label_val.at<int>(index_val) = image_labels[i];
-			index_val++;
-		}
-		else
-		{
-			data_row = data_test.row(index_test);
-			label_test.at<int>(index_test) = image_labels[i];
-			index_test++;
-		}
+		// Generate predictions
+		int predicted_class = this->generatePrediction(img);
 		
-		// Copy extracted features to the feature mat
-		feature_vector.copyTo(data_row);
+		//If correct prediction
+		if (image_labels[i] == predicted_class)
+		{
+			if (train_test_split[i] == TRAIN_EXAMPLE)
+				num_correct_train++;
+			else if (train_test_split[i] == VALIDATION_EXAMPLE)
+				num_correct_val++;
+			else
+				num_correct_test++;
+		}
 	}
 
-	// Write extracted features to file
-	// cv::FileStorage file("features.txt", cv::FileStorage::WRITE);
-	// file << "f" << data;
-	// std::cout << "Features written to file" << std::endl;
+	std::cout << "Train set accuracy: " << (((float)num_correct_train) / num_training_examples) * 100 << "\% (" << num_correct_train << "/" << num_training_examples << ")" << std::endl;
+	std::cout << "Validation set accuracy: " << (((float)num_correct_val) / num_validation_examples) * 100 << "\% (" << num_correct_val << "/" << num_validation_examples << ")" << std::endl;
+	std::cout << "Test set accuracy: " << (((float)num_correct_test) / num_test_examples) * 100 << "\% (" << num_correct_test << "/" << num_test_examples << ")" << std::endl;
 
-#if PERFORM_PCA
-	if(!pca_data_loaded)
-	{
-		std::cout << "Computing PCA matrix" << std::endl;
-
-		// Compute principle components
-		// pca = pca(data_train, // pass the data
-		// 	cv::Mat(), // we do not have a pre-computed mean vector,
-		// 	// so let the PCA engine to compute it
-		// 	cv::PCA::DATA_AS_ROW, // indicate that the vectors
-		// 	// are stored as matrix rows
-		// 	// (use PCA::DATA_AS_COL if the vectors are
-		// 	// the matrix columns)
-		// 	NUM_COMP_PCA // specify, how many principal components to retain
-		// );
-
-		PCA pca(data_train, Mat(), cv::PCA::DATA_AS_ROW, NUM_COMP_PCA);
-
-		// Write PCA matrix to file
-		savePCAData();
-	}
-	
-	// Compress data using computed PCA matrix
-	std::cout << "Training data: (" << data_train.rows << ", " << data_train.cols << ") => (";
-	pca->project(data_train, data_train);
-	std::cout << data_train.rows << ", " << data_train.cols << ")" << std::endl;
-
-	std::cout << "Validation data: (" << data_val.rows << ", " << data_val.cols << ") => (";
-	pca->project(data_val, data_val);
-	std::cout << data_val.rows << ", " << data_val.cols << ")" << std::endl;
-
-	std::cout << "Test data: (" << data_test.rows << ", " << data_test.cols << ") => (";
-	pca->project(data_test, data_test);
-	std::cout << data_test.rows << ", " << data_test.cols << ")" << std::endl;
-#endif
-
-	// Train classifier only if no previously saved model found
-	if(!classifier_loaded)
-	{
-		// Train classifier on top of the these features
-		// std::cout << "Creating training data" << std::endl;
-		// cv::Ptr<cv::ml::TrainData> train_data_ = cv::ml::TrainData::create(data_train, cv::ml::ROW_SAMPLE, label_train);
-		
-		std::cout << "Training classifier" << std::endl;
-		// classifier->trainClassifier(train_data_);
-		classifier->trainClassifier(data_train, label_train);
-	}
-
-	// Test accuracy on validation and test set
-	std::cout << "Computing classifier's performance" << std::endl;
-
-	float train_acc = classifier->computeAccuracy(data_train, label_train);
-	std::cout << "Train set accuracy: " << train_acc * 100 << "\%" << std::endl;
-
-	float val_acc = classifier->computeAccuracy(data_val, label_val);
-	std::cout << "Validation set accuracy: " << val_acc * 100 << "\%" << std::endl;
-
-	float test_acc = classifier->computeAccuracy(data_test, label_test);
-	std::cout << "Test set accuracy: " << test_acc * 100 << "\%" << std::endl;
-
-	std::cout << "Classifier training completed" << std::endl;
+	end_time = std::chrono::steady_clock::now();
+	std::cout << "Time taken for evaluation: " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count() / 1000.0 << " secs" << std::endl;
 }
 
 int CrossLayerPoolingClassifier::generatePrediction(cv::Mat& img)
 {
 	// Extract features
-	cv::Mat feature_vector, predictions;
-	feature_extractor->extractFeatures(img, feature_vector);
-#if PERFORM_PCA
-	pca->project(feature_vector, feature_vector);
-#endif
-	classifier->generatePredictions(feature_vector, predictions);
-	return predictions.at<int>(0);
+	cv::Mat feature_vector;
+	feature_extractor->extractCrossPooledFeatures(img, feature_vector);
+	#if PERFORM_PCA
+		pca->project(feature_vector, feature_vector);
+	#endif
+
+	#if USE_SVM
+		cv::Mat predictions;
+		classifier->generatePredictionsSVM(feature_vector, predictions);
+		return predictions.at<int>(0);
+	#else
+		// Convert mat to vec
+		tiny_dnn::vec_t vec_features;
+		Utils::convertMatToVector(feature_vector, vec_features);
+
+		tiny_dnn::label_t prediction;
+		classifier->generatePredictionsMLP(vec_features, prediction);
+		return prediction;
+	#endif
 }
 
 

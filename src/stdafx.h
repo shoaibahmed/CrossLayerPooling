@@ -10,6 +10,9 @@
 // Caffe includes
 #include <caffe/caffe.hpp>
 
+// Tiny-DNN header
+#include "../tiny-dnn/tiny_dnn/tiny_dnn.h"
+
 // OpenCV includes
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -24,19 +27,24 @@
 #define TRAINED_FILE "./model/ResNet-152-model.caffemodel"
 #define MODEL_FILE "./model/ResNet-152-deploy.prototxt"
 
+#define ZERO_INDEXED_CLASSES false
 #define TRAIN_EXAMPLE 1
 #define VALIDATION_EXAMPLE 2
 #define TEST_EXAMPLE 0
-#define NUM_CLASSES 17
 
 #define PERFORM_PCA false
 #define NUM_COMP_PCA 512
 
+#define LOAD_CLASSIFIER false
 #define PCA_FILE_NAME "pca.xml"
 #define CLASSIFIER_NAME "mySVM.xml"
+#define USE_SVM false
+#define HIDDEN_LAYER_NEURONS 512 // For MLP
+#define MLP_CLASSIFIER_NAME "mlp"
 
 // Both blobs are with relu
 #define USE_GPU true
+// #define CPU_ONLY false
 #define PROFILE_MODE true
 #define LOWER_BLOB_NAME "res4b15"
 #define HIGHER_BLOB_NAME "res4b20"

@@ -2,11 +2,11 @@
 
 FeatureExtractor::FeatureExtractor(const string& model_file, const string& trained_file) 
 {
-#if USE_GPU
-	Caffe::set_mode(Caffe::GPU);
-#else
-	Caffe::set_mode(Caffe::CPU);
-#endif
+	#if USE_GPU
+		Caffe::set_mode(Caffe::GPU);
+	#else
+		Caffe::set_mode(Caffe::CPU);
+	#endif
 
 	/* Load the network. */
 	net_.reset(new Net<float>(model_file, TEST));
@@ -29,7 +29,12 @@ FeatureExtractor::FeatureExtractor(const string& model_file, const string& train
 	std::cout << "Region size padding: " << region_size_padding << std::endl;
 }
 
-void FeatureExtractor::extractFeatures(const cv::Mat& img, cv::Mat& cross_pooled_features) 
+void FeatureExtractor::extractFeatures(const cv::Mat& img, cv::Mat& upper_layer_features, cv::Mat& lower_layer_features)
+{
+
+}
+
+void FeatureExtractor::extractCrossPooledFeatures(const cv::Mat& img, cv::Mat& cross_pooled_features) 
 {
 	Blob<float>* input_layer = net_->input_blobs()[0];
 	input_layer->Reshape(1, num_channels_, input_geometry_.height, input_geometry_.width);
@@ -56,57 +61,58 @@ void FeatureExtractor::extractFeatures(const cv::Mat& img, cv::Mat& cross_pooled
 	int dim = lower_blob->channels() * higher_blob->channels() * REGION_SIZE * REGION_SIZE;
 	// std::cout << "Feature dim: " << dim << std::endl;
 	cross_pooled_features = Mat::zeros(1, dim, CV_32FC1);
-	float* cross_pooled_features_ptr = cross_pooled_features.ptr<float>(0); // Since there is only a single row
+	float* cross_pooled_features_ptr_base = cross_pooled_features.ptr<float>(0); // Since there is only a single row
 	
 	// Iterate over the feature volume
 	for (int n = 0; n < NUM_IMAGES; n++)
 	{
+		#pragma omp parallel for
 		// L2 is the higher layer
 		for (int kL2 = 0; kL2 < HIGHER_BLOB_CHANNELS; kL2++)
 		{
+			// #pragma omp parallel for
 			// L1 is the lower layer
 			for (int kL1 = 0; kL1 < LOWER_BLOB_CHANNELS; kL1++)
 			{
+				float* cross_pooled_features_ptr = cross_pooled_features_ptr_base + (kL2 * LOWER_BLOB_CHANNELS) + kL1;
 				for (int h = FEATURE_SPACING; h < BLOB_SIZE - FEATURE_SPACING; h++)
 				{
+					#if REGION_SIZE == 1
+						int higher_layer_index = ((n * HIGHER_BLOB_CHANNELS + kL2) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING;
+						int index = ((n * LOWER_BLOB_CHANNELS + kL1) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING;
+						// int index = ((n * BLOB_CHANNELS + k) * BLOB_SIZE + h) * BLOB_SIZE + w;
 
-#if REGION_SIZE == 1
-					int higher_layer_index = ((n * HIGHER_BLOB_CHANNELS + kL2) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING;
-					int index = ((n * LOWER_BLOB_CHANNELS + kL1) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING;
-					// int index = ((n * BLOB_CHANNELS + k) * BLOB_SIZE + h) * BLOB_SIZE + w;
-
-					for (int w = FEATURE_SPACING; w < BLOB_SIZE - FEATURE_SPACING; w++)
-					{
-						// *cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
-						*cross_pooled_features_ptr += *(begin_lower + index) * *(begin_higher + higher_layer_index);
-						index++;
-						higher_layer_index++;
-					}
-
-#else
-					for (int w = FEATURE_SPACING; w < BLOB_SIZE - FEATURE_SPACING; w++)
-					{
-						float* temp_loc = cross_pooled_features_ptr;
-						int higher_layer_index = ((n * HIGHER_BLOB_CHANNELS + kL2) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING + w;
-
-						for (int r_h = -region_size_padding; r_h <= region_size_padding; r_h++)
+						for (int w = FEATURE_SPACING; w < BLOB_SIZE - FEATURE_SPACING; w++)
 						{
-							for (int r_w = -region_size_padding; r_w <= region_size_padding; r_w++)
-							{
-								int index = ((n * LOWER_BLOB_CHANNELS + kL1) * BLOB_SIZE + (h - r_h)) * BLOB_SIZE + FEATURE_SPACING + (w - r_w);
-								// *cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
-								*cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
-								// index++;
-								// higher_layer_index++;
-								// cross_pooled_features_ptr++;
-							}
+							// *cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
+							*cross_pooled_features_ptr += *(begin_lower + index) * *(begin_higher + higher_layer_index);
+							index++;
+							higher_layer_index++;
 						}
-						cross_pooled_features_ptr = temp_loc;
-					}
-#endif
 
+					#else
+						for (int w = FEATURE_SPACING; w < BLOB_SIZE - FEATURE_SPACING; w++)
+						{
+							float* temp_loc = cross_pooled_features_ptr;
+							int higher_layer_index = ((n * HIGHER_BLOB_CHANNELS + kL2) * BLOB_SIZE + h) * BLOB_SIZE + FEATURE_SPACING + w;
+
+							for (int r_h = -region_size_padding; r_h <= region_size_padding; r_h++)
+							{
+								for (int r_w = -region_size_padding; r_w <= region_size_padding; r_w++)
+								{
+									int index = ((n * LOWER_BLOB_CHANNELS + kL1) * BLOB_SIZE + (h - r_h)) * BLOB_SIZE + FEATURE_SPACING + (w - r_w);
+									// *cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
+									*cross_pooled_features_ptr++ += *(begin_lower + index) * *(begin_higher + higher_layer_index);
+									// index++;
+									// higher_layer_index++;
+									// cross_pooled_features_ptr++;
+								}
+							}
+							cross_pooled_features_ptr = temp_loc;
+						}
+					#endif
 				}
-				cross_pooled_features_ptr++; // Move to next element
+				// cross_pooled_features_ptr++; // Move to next element
 			}
 		}
 	}

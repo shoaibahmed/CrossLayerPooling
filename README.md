@@ -11,7 +11,8 @@ This repository provides a basic implementation of Cross-layer pooling algorithm
 
 <br/><b>TODOs: </b>
 <ol>
-<li>Add support for larger region sizes</li>
+<li>Add support for new classifiers along with SVM</li>
+<li>Add support for larger region sizes using PCA</li>
 <li>Add optimization</li>
 <li>Add code profiling</li>
 </ol>

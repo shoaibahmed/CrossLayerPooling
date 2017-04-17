@@ -1,22 +1,38 @@
 #include "Classifier.h"
 
-Classifier::Classifier()
+Classifier::Classifier(int featureSize, int numClasses) : net(), optimizer()
 {
-	svm = cv::ml::SVM::create();
+	#if USE_SVM
+		svm = cv::ml::SVM::create();
 
-	// Specify SVM params
-	svm->setType(cv::ml::SVM::C_SVC);
-	svm->setKernel(cv::ml::SVM::LINEAR);
-	svm->setC(10);
-	svm->setTermCriteria(cv::TermCriteria(cv::TermCriteria::MAX_ITER, 100, 1e-6));
+		// Specify SVM params
+		svm->setType(cv::ml::SVM::C_SVC);
+		svm->setKernel(cv::ml::SVM::LINEAR);
+		svm->setC(10);
+		svm->setTermCriteria(cv::TermCriteria(cv::TermCriteria::MAX_ITER, 100, 1e-6));
+	#else
+		// net = tiny_dnn::network<tiny_dnn::sequential>();
+		net << tiny_dnn::layers::fc(featureSize, HIDDEN_LAYER_NEURONS) << tiny_dnn::activation::tanh() << 
+			   tiny_dnn::layers::fc(HIDDEN_LAYER_NEURONS, numClasses) << tiny_dnn::activation::softmax();
+		// optimizer = new tiny_cnn::adam();
+		// net = tiny_dnn::make_mlp<tiny_dnn::cross_entropy_multiclass, tiny_dnn::adam, tiny_dnn::activation::tanh>({featureSize, HIDDEN_LAYER_NEURONS, numClasses});
+		// net = tiny_dnn::make_mlp<tiny_dnn::activation::softmax>({featureSize, HIDDEN_LAYER_NEURONS, numClasses});
+	#endif
 }
 
-void Classifier::trainClassifier(cv::Mat& X, cv::Mat& y)
-{
-	// cv::Ptr<cv::ml::TrainData> tempData = cv::ml::TrainData::create(X, cv::ml::ROW_SAMPLE, y);
-	// Assign the SVM parameters to the most accurate result
-	// svm->trainAuto(tempData);
+// void Classifier::trainClassifier(cv::Mat& X, cv::Mat& y)
+// void Classifier::trainClassifier(cv::Ptr<cv::ml::TrainData> train_data)
+// {
+// 	// Train classifier
+// 	// Each training sample occupies a column of samples
+// 	svm->train(train_data);
 
+// 	// Save trained classifier
+// 	saveClassifier();
+// }
+
+void Classifier::trainSVM(cv::Mat& X, cv::Mat& y)
+{
 	// Train classifier
 	// Each training sample occupies a column of samples
 	svm->train(X, cv::ml::ROW_SAMPLE, y);
@@ -25,30 +41,28 @@ void Classifier::trainClassifier(cv::Mat& X, cv::Mat& y)
 	saveClassifier();
 }
 
-void Classifier::trainClassifier(cv::Ptr<cv::ml::TrainData> train_data)
+void Classifier::trainMLP(const std::vector<tiny_dnn::vec_t>& data, const std::vector<tiny_dnn::label_t>& labels)
 {
-	// cv::Ptr<cv::ml::TrainData> tempData = cv::ml::TrainData::create(X, cv::ml::ROW_SAMPLE, y);
-	// Assign the SVM parameters to the most accurate result
-	// svm->trainAuto(tempData);
-
-	// Train classifier
-	// Each training sample occupies a column of samples
-	svm->train(train_data);
-
-	// Save trained classifier
-	saveClassifier();
+	// net.fit<tiny_dnn::cross_entropy_multiclass>(opt, in, t, batch_size, epoch);
+	// net->train(data, labels); // T == label_t
+	net.train<tiny_dnn::cross_entropy>(optimizer, data, labels, 1, 1); // T == label_t
 }
 
-void Classifier::generatePredictions(cv::Mat& X, cv::Mat& y_pred)
+void Classifier::generatePredictionsSVM(cv::Mat& X, cv::Mat& y_pred)
 {
 	svm->predict(X, y_pred);
+}
+
+void Classifier::generatePredictionsMLP(const tiny_dnn::vec_t& data, tiny_dnn::label_t& label)
+{
+	label = net.predict_label(data);
 }
 
 float Classifier::computeAccuracy(cv::Mat& X_test, cv::Mat& y_test)
 {
 	// Generate predictions
 	cv::Mat y_pred;
-	generatePredictions(X_test, y_pred);
+	generatePredictionsSVM(X_test, y_pred);
 	// std::cout << "Prediction: " << y_pred.type() << " (" << y_pred.rows << ", " << y_pred.cols << ")" << std::endl;
 	// std::cout << "GT: " << y_test.type() << " (" << y_test.rows << ", " << y_test.cols << ")" << std::endl;
 
@@ -65,7 +79,11 @@ float Classifier::computeAccuracy(cv::Mat& X_test, cv::Mat& y_test)
 
 bool Classifier::saveClassifier()
 {
-	svm->save(CLASSIFIER_NAME);
+	#if USE_SVM
+		svm->save(CLASSIFIER_NAME);
+	#else
+		net.save(MLP_CLASSIFIER_NAME);
+	#endif
 	std::cout << "Classifier saved successfully" << std::endl;
 	return true;
 }
@@ -74,8 +92,11 @@ bool Classifier::loadClassifier()
 {
 	if(Utils::fileExists(CLASSIFIER_NAME))
 	{
-		svm->load(CLASSIFIER_NAME);
-		// svm = cv::ml::SVM::load<cv::ml::SVM>(CLASSIFIER_NAME);
+		#if USE_SVM
+			svm->load<cv::ml::SVM>(CLASSIFIER_NAME);	
+		#else
+			net.load(MLP_CLASSIFIER_NAME);
+		#endif
 		std::cout << "Classifier loaded successfully" << std::endl;
 		return true;
 	}

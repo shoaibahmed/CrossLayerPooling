@@ -10,7 +10,7 @@ class CrossLayerPoolingClassifier
 {
 public:
 	CrossLayerPoolingClassifier();
-	void trainClassifier(std::string data_dir);
+	void trainClassifier(std::string data_dir, std::string images_dir);
 	int generatePrediction(cv::Mat& img);
 
 private:

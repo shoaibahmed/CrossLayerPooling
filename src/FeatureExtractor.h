@@ -11,7 +11,8 @@ class FeatureExtractor
 {
 public:
 	FeatureExtractor(const string& model_file, const string& trained_file);
-	void extractFeatures(const cv::Mat& img, cv::Mat& cross_pooled_features);
+	void extractFeatures(const cv::Mat& img, cv::Mat& upper_layer_features, cv::Mat& lower_layer_features);
+	void extractCrossPooledFeatures(const cv::Mat& img, cv::Mat& cross_pooled_features);
 	int getCrossPooledFeaturesSize(int num_comp_pca);
 
 private:
