@@ -64,15 +64,22 @@ parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth",
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=224, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in the image")
 
+parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
+parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
+
 parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
 
 # Parse command line options
 (options, args) = parser.parse_args()
 print (options)
 
+# Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
 USE_IMAGENET_MEAN = False
-
+FEATURE_SPACING = options.featureSpacing # Leave these features from each side
+LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
+REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
+LOCAL_REGION_DIM = LOCAL_REGION_SIZE * LOCAL_REGION_SIZE
 
 # Reads an image from a file, decodes it into a dense tensor
 def _parse_function(filename, label, split):
@@ -176,7 +183,7 @@ z = sqrt(abs(z)) .* sign(z);
 z = z / (1e-7 + norm(z));
 '''
 
-@numba.jit
+@numba.jit(cache=True, parallel=True)
 def crossLayerPoolSingleImage(lowerLayerFeatures, upperLayerFeatures):
 	numChannelsLowerLayer = lowerLayerFeatures.shape[-1]
 	numChannelsUpperLayer = upperLayerFeatures.shape[-1]
@@ -188,7 +195,23 @@ def crossLayerPoolSingleImage(lowerLayerFeatures, upperLayerFeatures):
 	# print ("Lower layer features: %s" % str(lowerLayerFeatures.shape))
 	# print ("Upper layer features: %s" % str(upperLayerFeatures.shape))
 
-	featureVector = np.zeros([numChannelsLowerLayer * numChannelsUpperLayer])
+	# updatedLowerLayerFeatures = np.zeros([lowerLayerFeatures.shape[0] - (LOCAL_REGION_SIZE - 1), lowerLayerFeatures.shape[1] - (LOCAL_REGION_SIZE - 1), LOCAL_REGION_DIM * lowerLayerFeatures.shape[3]])
+	featuresSize = LOCAL_REGION_SIZE - 1 if (LOCAL_REGION_SIZE - 1) > (FEATURE_SPACING * 2) else FEATURE_SPACING * 2
+	currentPadding = REGION_SIZE_PADDING if REGION_SIZE_PADDING > FEATURE_SPACING else FEATURE_SPACING
+	updatedLowerLayerFeatures = np.zeros((lowerLayerFeatures.shape[0] - featuresSize, lowerLayerFeatures.shape[1] - featuresSize, LOCAL_REGION_DIM * lowerLayerFeatures.shape[2]))
+
+	for i in range(currentPadding, lowerLayerFeatures.shape[0] - currentPadding):
+		for j in range(currentPadding, lowerLayerFeatures.shape[1] - currentPadding):
+			# for x in range(-REGION_SIZE_PADDING, REGION_SIZE_PADDING + 1):
+			updatedLowerLayerFeatures[i - currentPadding, j - currentPadding, :] = lowerLayerFeatures[i - REGION_SIZE_PADDING : i + REGION_SIZE_PADDING + 1, j - REGION_SIZE_PADDING : j + REGION_SIZE_PADDING + 1].flatten()
+	lowerLayerFeatures = updatedLowerLayerFeatures
+	upperLayerFeatures = upperLayerFeatures[currentPadding : -currentPadding, currentPadding : -currentPadding]
+
+	# After updation
+	# print ("Lower layer features: %s" % str(lowerLayerFeatures.shape))
+	# print ("Upper layer features: %s" % str(upperLayerFeatures.shape))
+
+	featureVector = np.zeros([numChannelsLowerLayer * numChannelsUpperLayer * LOCAL_REGION_DIM])
 	# print ("Feature vector shape: %s" % str(featureVector.shape))
 	for i in range(numChannelsUpperLayer):
 		upperLayerFeatureMap = np.expand_dims(upperLayerFeatures[:, :, i], -1)
@@ -197,7 +220,7 @@ def crossLayerPoolSingleImage(lowerLayerFeatures, upperLayerFeatures):
 		featureVec = np.sum(scaledFeatures, axis=(0, 1))
 		# print ("Squeezed features shape: %s" % str(featureVec.shape))
 		featureVec = featureVec / (1e-7 + np.linalg.norm(featureVec))
-		featureVector[(i * numChannelsLowerLayer) : ((i+1) * numChannelsLowerLayer)] = featureVec
+		featureVector[(i * numChannelsLowerLayer * LOCAL_REGION_DIM) : ((i+1) * numChannelsLowerLayer * LOCAL_REGION_DIM)] = featureVec
 
 	# Perform feature normalization
 	featureVector = (featureVector - np.mean(featureVector)) / np.std(featureVector)
@@ -249,6 +272,9 @@ with tf.Session(config=config) as sess:
 			step += 1
 	except tf.errors.OutOfRangeError:
 		print('Done training for %d epochs, %d steps.' % (options.numEpochs, step))
+	# except:
+	# 	import traceback
+	# 	traceback.print_exc(file=sys.stdout)
 
 # Save the computed features to pickle file
 clpFeatures = np.array(imFeatures)

@@ -63,15 +63,22 @@ parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth",
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=224, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in the image")
 
+parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
+parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
+
 parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
 
 # Parse command line options
 (options, args) = parser.parse_args()
 print (options)
 
+# Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
 USE_IMAGENET_MEAN = False
-
+FEATURE_SPACING = options.featureSpacing # Leave these features from each side
+LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
+REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
+LOCAL_REGION_DIM = LOCAL_REGION_SIZE * LOCAL_REGION_SIZE
 
 # Reads an image from a file, decodes it into a dense tensor
 def _parse_function(filename, label, split):
@@ -175,15 +182,22 @@ z = sqrt(abs(z)) .* sign(z);
 z = z / (1e-7 + norm(z));
 '''
 
+# Crop the features
+if LOCAL_REGION_SIZE > 1:
+	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1,LOCAL_REGION_SIZE,LOCAL_REGION_SIZE,1], [1,1,1,1], [1,1,1,1], 'SAME')
+
+lowerLayerActivations = lowerLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+
 numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
 numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
 
-print ("Number of channels in lower layer: %d" % (numChannelsLowerLayer))
-print ("Number of channels in upper layer: %d" % (numChannelsUpperLayer))
+print ("Lower layer shape: %s" % str(lowerLayerActivations.get_shape()))
+print ("Upper layer shape: %s" % str(upperLayerActivations.get_shape()))
 
 with tf.variable_scope("clp"):
 	# CLP output variable
-	clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer]), dtype=tf.float32)
+	clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer * LOCAL_REGION_DIM]), dtype=tf.float32)
 
 i = tf.constant(0)
 while_condition = lambda i: tf.less(i, numChannelsUpperLayer)
@@ -204,8 +218,8 @@ def loop_body(i):
 
 	# Assign it to clp
 	with tf.variable_scope("clp", reuse=True):
-		clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer]), dtype=tf.float32)
-	assignOp = clp[i * numChannelsLowerLayer : (i+1) * numChannelsLowerLayer].assign(c)
+		clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer * LOCAL_REGION_DIM]), dtype=tf.float32)
+	assignOp = clp[i * (numChannelsLowerLayer * LOCAL_REGION_SIZE) : (i+1) * (numChannelsLowerLayer * LOCAL_REGION_SIZE)].assign(c)
 	with tf.control_dependencies([assignOp]):
 		# Increment i
 		return [tf.add(i, 1)]

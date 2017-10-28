@@ -234,8 +234,8 @@ z = z / (1e-7 + norm(z));
 numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
 numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
 
-print ("Number of channels in lower layer: %d" % (numChannelsLowerLayer))
-print ("Number of channels in upper layer: %d" % (numChannelsUpperLayer))
+print ("Lower layer shape: %d" % str(lowerLayerActivations.get_shape()))
+print ("Upper layer shape: %d" % str(upperLayerActivations.get_shape()))
 
 with tf.variable_scope("clp"):
 	# CLP output variable
