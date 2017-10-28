@@ -206,79 +206,6 @@ def crossLayerPoolSingleImage(lowerLayerFeatures, upperLayerFeatures):
 
 	return featureVector
 
-
-# def crossLayerPoolGeneric(lowerLayerFeatures, upperLayerFeatures):
-# 	numChannelsLowerLayer = lowerLayerActivations.shape[-1]
-# 	numChannelsUpperLayer = upperLayerActivations.shape[-1]
-# 	batchSize = upperLayerActivations.shape[0]
-
-# 	featureVector = np.zeros([batchSize, numChannelsLowerLayer * numChannelsUpperLayer])
-# 	print ("Feature vector shape: %s" % str(featureVector.shape))
-# 	for i in range(numChannelsUpperLayer):
-# 		upperLayerFeatureMap = upperLayerActivations[:, :, :, i]
-# 		scaledFeatures = lowerLayerActivations * upperLayerActivations
-# 		print ("Data shape: %s" % str(scaledFeatures.shape))
-# 		featureVec = np.sum(scaledFeatures, axis=(1, 2))
-# 		featureVec = featureVec / (1e-7 + np.linalg.norm(featureVec))
-# 		featureVector[:, (i * numChannelsLowerLayer) : ((i+1) * numChannelsLowerLayer)] = featureVec
-
-# 	# Perform feature normalization
-# 	featureVector = (featureVector - np.mean(featureVector)) / np.std(featureVector)
-# 	featureVector = np.sqrt(np.abs(featureVector)) * np.sign(featureVector) # Point-wise mul
-# 	featureVector = featureVector / (1e-7 + np.linalg.norm(featureVector))
-
-# 	return featureVector
-
-'''
-numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
-numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
-
-print ("Number of channels in lower layer: %d" % (numChannelsLowerLayer))
-print ("Number of channels in upper layer: %d" % (numChannelsUpperLayer))
-
-with tf.variable_scope("clp"):
-	# CLP output variable
-	clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer]), dtype=tf.float32)
-
-i = tf.constant(0)
-while_condition = lambda i: tf.less(i, numChannelsUpperLayer)
-def loop_body(i):
-	# Load the corresponding channel from upper layer
-	upperLayerFeatureMap = tf.expand_dims(upperLayerActivations[:, :, :, i], -1)
-	
-	# Perform the multiplication
-	c = tf.to_float(lowerLayerActivations * upperLayerFeatureMap)
-
-	# Reduce sum
-	c = tf.reduce_sum(c, axis=list(range(len(upperLayerActivations.get_shape())-1)))
-
-	# Normalize the feature vector c
-	c = c / (1e-7 + tf.norm(c))
-
-	# print(c.get_shape())
-
-	# Assign it to clp
-	with tf.variable_scope("clp", reuse=True):
-		clp = tf.get_variable("clp", initializer=tf.zeros([numChannelsLowerLayer * numChannelsUpperLayer]), dtype=tf.float32)
-	assignOp = clp[i * numChannelsLowerLayer : (i+1) * numChannelsLowerLayer].assign(c)
-	with tf.control_dependencies([assignOp]):
-		# Increment i
-		return [tf.add(i, 1)]
-
-loopNode = tf.while_loop(while_condition, loop_body, [i])
-
-with tf.control_dependencies([loopNode]):
-	# Standardize the feature vector from CLP
-	mean, var = tf.nn.moments(clp, axes=[0])
-	clpVector = (clp - mean) / tf.sqrt(var)
-
-	# Signed normalization
-	clpVector = tf.sqrt(tf.abs(clpVector)) * tf.sign(clpVector)
-
-	# Normalize using the norm
-	clpVector = clpVector / (1e-7 + tf.norm(clpVector))
-'''
-
 # GPU config
 config = tf.ConfigProto()
 config.gpu_options.allow_growth=True
@@ -288,16 +215,13 @@ with tf.Session(config=config) as sess:
 	sess.run(tf.global_variables_initializer())
 	sess.run(tf.local_variables_initializer())
 
-	# Write the graph to file
-	summaryWriter = tf.summary.FileWriter("./logs", graph=tf.get_default_graph())
-
 	# Restore the model params
 	checkpointFileName = resnet_checkpoint_file if options.model == "ResNet" else inc_res_v2_checkpoint_file
 	print ("Restoring weights from file: %s" % (checkpointFileName))
 
 	# 'Saver' op to save and restore all the variables
-	# saver = tf.train.Saver(variables_to_restore)
-	# saver.restore(sess, checkpointFileName)
+	saver = tf.train.Saver(variables_to_restore)
+	saver.restore(sess, checkpointFileName)
 
 	# Initialize the dataset iterator
 	sess.run(iterator.initializer)
@@ -332,33 +256,21 @@ names = np.array(imNames)
 labels = np.array(imLabels)
 split = np.array(imSplit)
 
-SAVE_FEATURES = False
-if SAVE_FEATURES:
-	print ("Saving features to file")
-	np.save("/netscratch/siddiqui/CrossLayerPooling/data/imFeatures.npy", clpFeatures)
-	np.save("/netscratch/siddiqui/CrossLayerPooling/data/imNames.npy", names)
-	np.save("/netscratch/siddiqui/CrossLayerPooling/data/imLabels.npy", labels)
-	print ("Saving complete!")
-
-# Divide the dataset into train, test and validation set
-# trainEndIndex = 1309
-# validationEndIndex = trainEndIndex + 237
-# testEndIndex = validationEndIndex + 663
-# assert(testEndIndex == 2209)
+# Remove the previous variables
+imFeatures = None
+imNames = None
+imLabels = None
+imSplit = None
 
 print ("Training Linear Model with Hinge Loss")
-clf = linear_model.SGDClassifier(n_jobs=-1)
-# clf = svm.LinearSVR(C=10.0)
+# clf = linear_model.SGDClassifier(n_jobs=-1)
+clf = svm.LinearSVR(C=10.0)
 
 # clf.fit(clpFeatures[:trainEndIndex], labels[:trainEndIndex])
 trainData = (clpFeatures[split == TRAIN], labels[split == TRAIN])
 print ("Number of images in training set: %d" % (trainData[0].shape[0]))
 clf.fit(trainData[0], trainData[1])
-
 print ("Training complete!")
-if SAVE_FEATURES:
-	with open('/netscratch/siddiqui/CrossLayerPooling/data/svm.pkl', 'wb') as fid:
-		cPickle.dump(clf, fid)
 
 print ("Evaluating validation accuracy")
 validationData = (clpFeatures[split == VAL], labels[split == VAL])

@@ -215,7 +215,7 @@ loopNode = tf.while_loop(while_condition, loop_body, [i])
 with tf.control_dependencies([loopNode]):
 	# Standardize the feature vector from CLP
 	mean, var = tf.nn.moments(clp, axes=[0])
-	clpVector = (clp - mean) / tf.sqrt(var)
+	clpVector = (clp - mean) / var
 
 	# Signed normalization
 	clpVector = tf.sqrt(tf.abs(clpVector)) * tf.sign(clpVector)
@@ -279,6 +279,12 @@ names = np.array(imNames)
 labels = np.array(imLabels)
 split = np.array(imSplit)
 
+# Remove the previous variables
+imFeatures = None
+imNames = None
+imLabels = None
+imSplit = None
+
 print ("List content sample")
 print (names[:10])
 print (labels[:10])
@@ -292,15 +298,9 @@ if SAVE_FEATURES:
 	np.save("/netscratch/siddiqui/CrossLayerPooling/data/imLabels.npy", labels)
 	print ("Saving complete!")
 
-# Divide the dataset into train, test and validation set
-# trainEndIndex = 1309
-# validationEndIndex = trainEndIndex + 237
-# testEndIndex = validationEndIndex + 663
-# assert(testEndIndex == 2209)
-
 print ("Training Linear Model with Hinge Loss")
-clf = linear_model.SGDClassifier(n_jobs=-1)
-# clf = svm.LinearSVR(C=10.0)
+# clf = linear_model.SGDClassifier(n_jobs=-1)
+clf = svm.LinearSVR(C=10.0)
 
 # clf.fit(clpFeatures[:trainEndIndex], labels[:trainEndIndex])
 trainData = (clpFeatures[split == TRAIN], labels[split == TRAIN])
