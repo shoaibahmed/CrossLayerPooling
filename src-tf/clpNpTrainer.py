@@ -290,25 +290,25 @@ imSplit = None
 
 print ("Training Linear Model with Hinge Loss")
 # clf = linear_model.SGDClassifier(n_jobs=-1)
-clf = svm.LinearSVR(C=10.0)
+clf = svm.LinearSVC(C=10.0)
 
 # clf.fit(clpFeatures[:trainEndIndex], labels[:trainEndIndex])
 trainData = (clpFeatures[split == TRAIN], labels[split == TRAIN])
 print ("Number of images in training set: %d" % (trainData[0].shape[0]))
 clf.fit(trainData[0], trainData[1])
 print ("Training complete!")
+trainAccuracy = clf.score(trainData[0], trainData[1])
+print ("Train accuracy: %f" % (trainAccuracy))
 
 print ("Evaluating validation accuracy")
 validationData = (clpFeatures[split == VAL], labels[split == VAL])
 print ("Number of images in validation set: %d" % (validationData[0].shape[0]))
-clf.fit(validationData[0], validationData[1])
 validationAccuracy = clf.score(validationData[0], validationData[1])
 print ("Validation accuracy: %f" % (validationAccuracy))
 
 print ("Evaluating test accuracy")
 testData = (clpFeatures[split == TEST], labels[split == TEST])
 print ("Number of images in test set: %d" % (testData[0].shape[0]))
-clf.fit(testData[0], testData[1])
 testAccuracy = clf.score(testData[0], testData[1])
 print ("Test accuracy: %f" % (testAccuracy))
 

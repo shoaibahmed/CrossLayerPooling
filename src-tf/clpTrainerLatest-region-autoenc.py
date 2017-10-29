@@ -1,6 +1,7 @@
 import tensorflow as tf
 slim = tf.contrib.slim
 
+import math
 import numpy as np
 
 from optparse import OptionParser
@@ -57,7 +58,7 @@ parser = OptionParser()
 
 parser.add_option("-m", "--model", action="store", type="string", dest="model", default="ResNet", help="Model to be used for Cross-Layer Pooling")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size to be used")
-parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs")
+parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs to be trained for RBM")
 
 parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=224, help="Image width for feeding into the network")
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=224, help="Image height for feeding into the network")
@@ -65,6 +66,7 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 
 parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
 parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
+parser.add_option("--compressedFeatureVectorSize", action="store", type="int", dest="compressedFeatureVectorSize", default=2048, help="Size of the compressed feature vector")
 
 parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
 
@@ -75,7 +77,6 @@ print (options)
 # Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
 USE_IMAGENET_MEAN = False
-SAVE_FEATURES = False
 FEATURE_SPACING = options.featureSpacing # Leave these features from each side
 LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
 REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
@@ -183,17 +184,105 @@ z = sqrt(abs(z)) .* sign(z);
 z = z / (1e-7 + norm(z));
 '''
 
+def lrelu(x, leak=0.2, name="lrelu"):
+	"""Leaky rectifier.
+	Parameters
+	----------
+	x : Tensor
+		The tensor to apply the nonlinearity to.
+	leak : float, optional
+		Leakage parameter.
+	name : str, optional
+		Variable scope to use.
+	Returns
+	-------
+	x : Tensor
+		Output of the nonlinearity.
+	"""
+	with tf.variable_scope(name):
+		f1 = 0.5 * (1 + leak)
+		f2 = 0.5 * (1 - leak)
+		return f1 * x + f2 * abs(x)
+
+def convolutionalAutoEncoder(inputVector,
+				n_filters,
+				filter_sizes=[3, 3]):
+	# projection = tf.layers.conv2d(inputs=inputVector, filters=1024, kernel_size=(1, 1), use_bias=False, name='projectionLayer_1')
+	# projection = tf.layers.conv2d(inputs=tf.nn.relu(projection), filters=64, kernel_size=(1, 1), use_bias=False, name='projectionLayer_2')
+	# reconstruction = tf.layers.conv2d_transpose(inputs=tf.nn.relu(projection), filters=1024, kernel_size=(1, 1), use_bias=False, name='projectionLayer_transpose_1')
+	# reconstruction = tf.layers.conv2d_transpose(inputs=tf.nn.relu(reconstruction), filters=int(inputVector.get_shape()[-1]), kernel_size=(1, 1), use_bias=False, name='projectionLayer_transpose_2')
+
+	current_input = inputVector
+	n_filters[0]  = int(inputVector.get_shape()[-1])
+
+	# Build the encoder
+	encoder = []
+	shapes = []
+	for layer_i, n_output in enumerate(n_filters[1:]):
+		n_input = current_input.get_shape().as_list()[3]
+		shapes.append(current_input.get_shape().as_list())
+		W = tf.Variable(
+			tf.random_uniform([
+				filter_sizes[layer_i],
+				filter_sizes[layer_i],
+				n_input, n_output],
+				-1.0 / math.sqrt(n_input),
+				1.0 / math.sqrt(n_input)))
+		b = tf.Variable(tf.zeros([n_output]))
+		encoder.append(W)
+		output = lrelu(
+			tf.add(tf.nn.conv2d(
+				current_input, W, strides=[1, 1, 1, 1], padding='SAME'), b))
+		current_input = output
+
+	# %%
+	# store the latent representation
+	z = current_input
+	encoder.reverse()
+	shapes.reverse()
+
+	# %%
+	# Build the decoder using the same weights
+	for layer_i, shape in enumerate(shapes):
+		W = encoder[layer_i]
+		b = tf.Variable(tf.zeros([W.get_shape().as_list()[2]]))
+		output = lrelu(tf.add(
+			tf.nn.conv2d_transpose(
+				current_input, W,
+				tf.stack([tf.shape(inputVector)[0], shape[1], shape[2], shape[3]]),
+				strides=[1, 1, 1, 1], padding='SAME'), b))
+		current_input = output
+
+	# %%
+	# now have the reconstruction through the network
+	y = current_input
+
+	return z, y
+
 # Crop the features
 if LOCAL_REGION_SIZE > 1:
 	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1,LOCAL_REGION_SIZE,LOCAL_REGION_SIZE,1], [1,1,1,1], [1,1,1,1], 'SAME')
 
-lowerLayerActivations = lowerLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
-upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+# Perform feature compression to make the computations tractable
+lowerLayerActivationsCompressed, lowerLayerActivationsReconstructed = convolutionalAutoEncoder(lowerLayerActivations, n_filters=[1, 1024])
 
-numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
-numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
+# compRepVer = tf.verify_tensor_all_finite(lowerLayerActivationsCompressed, "Infinite values on compressed activations", name=None)
+# reconsRepVer = tf.verify_tensor_all_finite(lowerLayerActivationsReconstructed, "Infinite values on reconstructed activations", name=None)
 
 print ("Lower layer shape: %s" % str(lowerLayerActivations.get_shape()))
+print ("Lower layer reconstruction shape: %s" % str(lowerLayerActivationsReconstructed.get_shape()))
+print ("Compressed lower layer shape: %s" % str(lowerLayerActivationsCompressed.get_shape()))
+
+# Loss for the lower layers
+reconstructionLossLowerLayer = tf.reduce_sum(tf.square(lowerLayerActivationsReconstructed - lowerLayerActivations))
+
+lowerLayerActivations = lowerLayerActivationsCompressed[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+
+numChannelsLowerLayer = lowerLayerActivationsCompressed.get_shape()[-1]
+numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
+
+# print ("Lower layer shape: %s" % str(lowerLayerActivations.get_shape()))
 print ("Upper layer shape: %s" % str(upperLayerActivations.get_shape()))
 
 with tf.variable_scope("clp"):
@@ -238,9 +327,61 @@ with tf.control_dependencies([loopNode]):
 	# Normalize using the norm
 	clpVector = clpVector / (1e-7 + tf.norm(clpVector))
 
+def denseAutoEncoder(inputVector, dimensions):
+	current_input = tf.expand_dims(inputVector, 0)
+	n_filters[0]  = int(inputVector.get_shape()[-1])
+
+	# %% Build the encoder
+	encoder = []
+	for layer_i, n_output in enumerate(dimensions[1:]):
+		with tf.variable_scope("encoder_" + str(layer_i + 1)):
+			n_input = int(current_input.get_shape()[1])
+			limit = math.sqrt(6.0 / (n_input + n_output))
+			W = tf.Variable(tf.random_uniform([n_input, n_output], -limit, limit))
+			b = tf.Variable(tf.zeros([n_output]))
+			encoder.append(W)
+			out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='encoder_' + str(layer_i + 1) + '_bn')
+			lastLayer = n_output == len(dimensions) - 2
+			if not lastLayer:
+				output = lrelu(out, name="encoder_lrelu_" + str(layer_i + 1))
+			current_input = output
+
+	# %% latent representation
+	z = current_input
+	encoder.reverse()
+	current_input = lrelu(current_input, name="encoder_lrelu_" + str(len(dimensions) - 2 + 1))
+
+	# %% Build the decoder using the SAME weights
+	lastIndex = len(encoder) - 1
+	for layer_i, n_output in enumerate(dimensions[:-1][::-1]):
+		# with tf.variable_scope("encoder_" + str(layer_i + 1)):
+		W = tf.transpose(encoder[layer_i])
+		b = tf.Variable(tf.zeros([n_output]))
+		# Add non-linearity if not the last layer
+		if layer_i != lastIndex:
+			out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='decoder_' + str(layer_i + 1) + '_bn')
+			output = lrelu(out, name="decoder_lrelu_" + str(layer_i + 1))
+			# output = lrelu(tf.matmul(current_input, W) + b, name="decoder_lrelu_" + str(layer_i + 1))
+		else:
+			output = tf.matmul(current_input, W) + b
+		current_input = output
+
+	return z, current_input	
+
+# Perform feature compression to make the computations tractable
+clpVectorCompressed, clpVectorReconstruction = denseAutoEncoder(clpVector, dimensions=[1, options.compressedFeatureVectorSize])
+
+# Loss for the clp vector
+reconstructionLossCLPVector = tf.reduce_sum(tf.square(clpVectorReconstruction - clpVector))
+
+# Optimizer
+loss = reconstructionLossLowerLayer + reconstructionLossCLPVector
+optimizer = tf.train.AdamOptimizer(1e-4).minimize(loss)
+
 # GPU config
 config = tf.ConfigProto()
 config.gpu_options.allow_growth=True
+# config.log_device_placement=True
 
 with tf.Session(config=config) as sess:
 	# Initialize all vars
@@ -258,35 +399,42 @@ with tf.Session(config=config) as sess:
 	saver = tf.train.Saver(variables_to_restore)
 	saver.restore(sess, checkpointFileName)
 
-	# Initialize the dataset iterator
-	sess.run(iterator.initializer)
-
 	imFeatures = []
 	imNames = []
 	imLabels = []
 	imSplit = []
-	try:
-		step = 0
-		while True:
-			start_time = time.time()
 
-			namesOut, labelsOut, splitOut, clpOut = sess.run([inputBatchImageNames, inputBatchImageLabels, inputBatchImageSplit, clpVector])
-			imFeatures.append(clpOut)
-			imNames.extend(namesOut)
-			imLabels.extend(labelsOut)
-			imSplit.extend(splitOut)
+	for epoch in range(options.numEpochs + 1):
+		generateOutputVectors = epoch == options.numEpochs
 
-			# print ("Image Name: %s" % (namesOut[0]))
-			# print ("Image Label: %s" % (labelsOut[0]))
+		# Initialize the dataset iterator
+		sess.run(iterator.initializer)
+		try:
+			step = 0
+			while True:
+				start_time = time.time()
 
-			duration = time.time() - start_time
+				if generateOutputVectors:
+					namesOut, labelsOut, splitOut, clpOut = sess.run([inputBatchImageNames, inputBatchImageLabels, inputBatchImageSplit, clpVectorCompressed])
+					assert (not np.isnan(clpOut).any())
+					assert (not np.isinf(clpOut).any())
+					imFeatures.append(clpOut)
+					imNames.extend(namesOut)
+					imLabels.extend(labelsOut)
+					imSplit.extend(splitOut)
 
-			# Print an overview fairly often.
-			if step % 100 == 0:
-				print('Processing file # %d (%.3f sec)' % (step, duration))
-			step += 1
-	except tf.errors.OutOfRangeError:
-		print('Done training for %d epochs, %d steps.' % (options.numEpochs, step))
+					duration = time.time() - start_time
+
+					if step % 100 == 0:
+						print('Processing file # %d (%.3f sec)' % (step, duration))
+				else:
+					currentLoss, _ = sess.run([loss, optimizer])
+					duration = time.time() - start_time
+					print ("Step: %d | Duration: %.3f seconds | Loss: %f" % (step, duration, currentLoss))
+
+				step += 1
+		except tf.errors.OutOfRangeError:
+			print('Done training for %d epochs, %d steps.' % (epoch, step))
 
 # Save the computed features to pickle file
 clpFeatures = np.array(imFeatures)
@@ -305,6 +453,7 @@ print (names[:10])
 print (labels[:10])
 print (split[:10])
 
+SAVE_FEATURES = False
 if SAVE_FEATURES:
 	print ("Saving features to file")
 	np.save("/netscratch/siddiqui/CrossLayerPooling/data/imFeatures.npy", clpFeatures)
