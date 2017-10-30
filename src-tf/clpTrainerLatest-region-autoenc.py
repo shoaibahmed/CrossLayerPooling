@@ -66,7 +66,11 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 
 parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
 parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
+parser.add_option("--compressedLowerLayerSize", action="store", type="int", dest="compressedLowerLayerSize", default=64, help="Size of the compressed lower layer feature vector")
 parser.add_option("--compressedFeatureVectorSize", action="store", type="int", dest="compressedFeatureVectorSize", default=512, help="Size of the compressed feature vector")
+
+parser.add_option("--learningRate", action="store", type="float", dest="learningRate", default=1e-4, help="Learning rate for the auto-encoder")
+parser.add_option("--regularizationParam", action="store", type="float", dest="regularizationParam", default=1e-5, help="Regularization param for L2 regularization")
 
 parser.add_option("--useImageNetMean", action="store_true", dest="useImageNetMean", default=False, help="Use Image Net mean for normalization")
 parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", default=False, help="Whether to save computed features")
@@ -85,6 +89,9 @@ FEATURE_SPACING = options.featureSpacing # Leave these features from each side
 LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
 REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
 LOCAL_REGION_DIM = LOCAL_REGION_SIZE * LOCAL_REGION_SIZE
+
+LEARNING_RATE = options.learningRate
+REGULARIZATION_PARAM = options.regularizationParam
 
 # Reads an image from a file, decodes it into a dense tensor
 def _parse_function(filename, label, split):
@@ -224,6 +231,7 @@ def convolutionalAutoEncoder(inputVector,
 	# Build the encoder
 	encoder = []
 	shapes = []
+	lastLayerIdx = len(n_filters) - 2
 	for layer_i, n_output in enumerate(n_filters[1:]):
 		n_input = current_input.get_shape().as_list()[3]
 		shapes.append(current_input.get_shape().as_list())
@@ -236,9 +244,12 @@ def convolutionalAutoEncoder(inputVector,
 				1.0 / math.sqrt(n_input)))
 		b = tf.Variable(tf.zeros([n_output]))
 		encoder.append(W)
-		output = lrelu(
-			tf.add(tf.nn.conv2d(
-				current_input, W, strides=[1, 1, 1, 1], padding='SAME'), b))
+		# output = lrelu(
+		# 	tf.add(tf.nn.conv2d(
+		# 		current_input, W, strides=[1, 1, 1, 1], padding='SAME'), b))
+		output = tf.add(tf.nn.conv2d(current_input, W, strides=[1, 1, 1, 1], padding='SAME'), b)
+		if lastLayerIdx != layer_i:
+			output = lrelu(output)
 		current_input = output
 
 	# %%
@@ -252,11 +263,17 @@ def convolutionalAutoEncoder(inputVector,
 	for layer_i, shape in enumerate(shapes):
 		W = encoder[layer_i]
 		b = tf.Variable(tf.zeros([W.get_shape().as_list()[2]]))
-		output = lrelu(tf.add(
+		# output = lrelu(tf.add(
+		# 	tf.nn.conv2d_transpose(
+		# 		current_input, W,
+		# 		tf.stack([tf.shape(inputVector)[0], shape[1], shape[2], shape[3]]),
+		# 		strides=[1, 1, 1, 1], padding='SAME'), b))
+		current_input = lrelu(current_input)
+		output = tf.add(
 			tf.nn.conv2d_transpose(
 				current_input, W,
 				tf.stack([tf.shape(inputVector)[0], shape[1], shape[2], shape[3]]),
-				strides=[1, 1, 1, 1], padding='SAME'), b))
+				strides=[1, 1, 1, 1], padding='SAME'), b)
 		current_input = output
 
 	# %%
@@ -270,7 +287,7 @@ if LOCAL_REGION_SIZE > 1:
 	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1,LOCAL_REGION_SIZE,LOCAL_REGION_SIZE,1], [1,1,1,1], [1,1,1,1], 'SAME')
 
 # Perform feature compression to make the computations tractable
-lowerLayerActivationsCompressed, lowerLayerActivationsReconstructed = convolutionalAutoEncoder(lowerLayerActivations, n_filters=[1, 1024])
+lowerLayerActivationsCompressed, lowerLayerActivationsReconstructed = convolutionalAutoEncoder(lowerLayerActivations, n_filters=[1, options.compressedLowerLayerSize])
 
 # compRepVer = tf.verify_tensor_all_finite(lowerLayerActivationsCompressed, "Infinite values on compressed activations", name=None)
 # reconsRepVer = tf.verify_tensor_all_finite(lowerLayerActivationsReconstructed, "Infinite values on reconstructed activations", name=None)
@@ -280,12 +297,14 @@ print ("Lower layer reconstruction shape: %s" % str(lowerLayerActivationsReconst
 print ("Compressed lower layer shape: %s" % str(lowerLayerActivationsCompressed.get_shape()))
 
 # Loss for the lower layers
-reconstructionLossLowerLayer = tf.reduce_sum(tf.square(lowerLayerActivationsReconstructed - lowerLayerActivations))
+reconstructionLossLowerLayer = tf.reduce_sum(tf.square(lowerLayerActivationsReconstructed - lowerLayerActivations)) + REGULARIZATION_PARAM * tf.reduce_sum(lowerLayerActivationsCompressed)
 
-lowerLayerActivations = lowerLayerActivationsCompressed[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
-upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+lowerLayerActivations = lowerLayerActivationsCompressed
+if FEATURE_SPACING > 0:
+	lowerLayerActivations = lowerLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+	upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
 
-numChannelsLowerLayer = lowerLayerActivationsCompressed.get_shape()[-1]
+numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
 numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
 
 # print ("Lower layer shape: %s" % str(lowerLayerActivations.get_shape()))
@@ -339,6 +358,7 @@ def denseAutoEncoder(inputVector, dimensions):
 
 	# %% Build the encoder
 	encoder = []
+	lastLayerIdx = len(dimensions) - 2
 	for layer_i, n_output in enumerate(dimensions[1:]):
 		with tf.variable_scope("encoder_" + str(layer_i + 1)):
 			n_input = int(current_input.get_shape()[1])
@@ -346,11 +366,13 @@ def denseAutoEncoder(inputVector, dimensions):
 			W = tf.Variable(tf.random_uniform([n_input, n_output], -limit, limit))
 			b = tf.Variable(tf.zeros([n_output]))
 			encoder.append(W)
-			out = tf.matmul(current_input, W) + b
-			# out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='encoder_' + str(layer_i + 1) + '_bn')
-			lastLayer = n_output == len(dimensions) - 2
-			if not lastLayer:
-				output = lrelu(out, name="encoder_lrelu_" + str(layer_i + 1))
+			# out = tf.matmul(current_input, W) + b
+			# lastLayer = n_output == len(dimensions) - 2
+			# if not lastLayer:
+			# 	output = lrelu(out, name="encoder_lrelu_" + str(layer_i + 1))
+			output = tf.matmul(current_input, W) + b
+			if lastLayerIdx != layer_i:
+				output = lrelu(output)
 			current_input = output
 
 	# %% latent representation
@@ -365,13 +387,14 @@ def denseAutoEncoder(inputVector, dimensions):
 		W = tf.transpose(encoder[layer_i])
 		b = tf.Variable(tf.zeros([n_output]))
 		# Add non-linearity if not the last layer
-		if layer_i != lastIndex:
-			# out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='decoder_' + str(layer_i + 1) + '_bn')
-			out = tf.matmul(current_input, W) + b
-			output = lrelu(out, name="decoder_lrelu_" + str(layer_i + 1))
-			# output = lrelu(tf.matmul(current_input, W) + b, name="decoder_lrelu_" + str(layer_i + 1))
-		else:
-			output = tf.matmul(current_input, W) + b
+		# if layer_i != lastIndex:
+		# 	out = tf.matmul(current_input, W) + b
+		# 	output = lrelu(out, name="decoder_lrelu_" + str(layer_i + 1))
+		# 	# output = lrelu(tf.matmul(current_input, W) + b, name="decoder_lrelu_" + str(layer_i + 1))
+		# else:
+		# 	output = tf.matmul(current_input, W) + b
+		current_input = lrelu(current_input)
+		output = tf.matmul(current_input, W) + b
 		current_input = output
 
 	return tf.squeeze(z), tf.squeeze(current_input)
@@ -380,11 +403,11 @@ def denseAutoEncoder(inputVector, dimensions):
 clpVectorCompressed, clpVectorReconstruction = denseAutoEncoder(clpVector, dimensions=[1, options.compressedFeatureVectorSize])
 
 # Loss for the clp vector
-reconstructionLossCLPVector = tf.reduce_sum(tf.square(clpVectorReconstruction - clpVector))
+reconstructionLossCLPVector = tf.reduce_sum(tf.square(clpVectorReconstruction - clpVector)) + REGULARIZATION_PARAM * tf.reduce_sum(clpVectorCompressed)
 
 # Optimizer
 loss = reconstructionLossLowerLayer + reconstructionLossCLPVector
-optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
+optimizer = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE).minimize(loss)
 
 # GPU config
 config = tf.ConfigProto()
