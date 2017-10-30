@@ -66,6 +66,9 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
 parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
 
+parser.add_option("--useImageNetMean", action="store_true", dest="useImageNetMean", default=False, help="Use Image Net mean for normalization")
+parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", default=False, help="Whether to save computed features")
+
 parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
 
 # Parse command line options
@@ -74,8 +77,8 @@ print (options)
 
 # Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
-USE_IMAGENET_MEAN = False
-SAVE_FEATURES = False
+USE_IMAGENET_MEAN = options.useImageNetMean
+SAVE_FEATURES = options.saveFeatures
 FEATURE_SPACING = options.featureSpacing # Leave these features from each side
 LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
 REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
@@ -98,6 +101,7 @@ def _parse_function(filename, label, split):
 print ("Loading data from file: %s" % (options.dataFile))
 with open(options.dataFile) as f:
 	imageFileNames = f.readlines()
+	numItemsInDataset = len(imageFileNames)
 	imNames = []
 	imLabels = []
 	imSplit = []
@@ -114,6 +118,7 @@ with open(options.dataFile) as f:
 
 dataset = tf.contrib.data.Dataset.from_tensor_slices((imNames, imLabels, imSplit))
 dataset = dataset.map(_parse_function)
+dataset = dataset.shuffle(buffer_size=numItemsInDataset, seed=0)
 dataset = dataset.batch(options.batchSize)
 
 iterator = dataset.make_initializable_iterator()

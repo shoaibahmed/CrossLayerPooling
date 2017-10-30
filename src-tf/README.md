@@ -3,8 +3,7 @@ This repository provides a basic implementation of Cross-layer pooling algorithm
 
 <br/><b>TODOs: </b>
 <ol>
-<li>Add support for larger region sizes using PCA</li>
-<li>Implicit PCA with Auto-encoder</li>
+	<li>Testing of auto-encoder based region size reduction</li>
 </ol>
 
 <br/><br/> Author: <b>Shoaib Ahmed Siddiqui</b>

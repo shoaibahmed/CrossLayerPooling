@@ -66,7 +66,10 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 
 parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
 parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
-parser.add_option("--compressedFeatureVectorSize", action="store", type="int", dest="compressedFeatureVectorSize", default=2048, help="Size of the compressed feature vector")
+parser.add_option("--compressedFeatureVectorSize", action="store", type="int", dest="compressedFeatureVectorSize", default=512, help="Size of the compressed feature vector")
+
+parser.add_option("--useImageNetMean", action="store_true", dest="useImageNetMean", default=False, help="Use Image Net mean for normalization")
+parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", default=False, help="Whether to save computed features")
 
 parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
 
@@ -76,7 +79,8 @@ print (options)
 
 # Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
-USE_IMAGENET_MEAN = False
+USE_IMAGENET_MEAN = options.useImageNetMean
+SAVE_FEATURES = options.saveFeatures
 FEATURE_SPACING = options.featureSpacing # Leave these features from each side
 LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
 REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
@@ -99,6 +103,7 @@ def _parse_function(filename, label, split):
 print ("Loading data from file: %s" % (options.dataFile))
 with open(options.dataFile) as f:
 	imageFileNames = f.readlines()
+	numItemsInDataset = len(imageFileNames)
 	imNames = []
 	imLabels = []
 	imSplit = []
@@ -115,6 +120,7 @@ with open(options.dataFile) as f:
 
 dataset = tf.contrib.data.Dataset.from_tensor_slices((imNames, imLabels, imSplit))
 dataset = dataset.map(_parse_function)
+dataset = dataset.shuffle(buffer_size=numItemsInDataset, seed=0)
 dataset = dataset.batch(options.batchSize)
 
 iterator = dataset.make_initializable_iterator()
@@ -329,7 +335,7 @@ with tf.control_dependencies([loopNode]):
 
 def denseAutoEncoder(inputVector, dimensions):
 	current_input = tf.expand_dims(inputVector, 0)
-	n_filters[0]  = int(inputVector.get_shape()[-1])
+	dimensions[0]  = int(inputVector.get_shape()[-1])
 
 	# %% Build the encoder
 	encoder = []
@@ -340,7 +346,8 @@ def denseAutoEncoder(inputVector, dimensions):
 			W = tf.Variable(tf.random_uniform([n_input, n_output], -limit, limit))
 			b = tf.Variable(tf.zeros([n_output]))
 			encoder.append(W)
-			out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='encoder_' + str(layer_i + 1) + '_bn')
+			out = tf.matmul(current_input, W) + b
+			# out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='encoder_' + str(layer_i + 1) + '_bn')
 			lastLayer = n_output == len(dimensions) - 2
 			if not lastLayer:
 				output = lrelu(out, name="encoder_lrelu_" + str(layer_i + 1))
@@ -359,14 +366,15 @@ def denseAutoEncoder(inputVector, dimensions):
 		b = tf.Variable(tf.zeros([n_output]))
 		# Add non-linearity if not the last layer
 		if layer_i != lastIndex:
-			out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='decoder_' + str(layer_i + 1) + '_bn')
+			# out = tf.layers.batch_normalization(inputs=tf.matmul(current_input, W) + b, center=True, scale=True, training=phase, name='decoder_' + str(layer_i + 1) + '_bn')
+			out = tf.matmul(current_input, W) + b
 			output = lrelu(out, name="decoder_lrelu_" + str(layer_i + 1))
 			# output = lrelu(tf.matmul(current_input, W) + b, name="decoder_lrelu_" + str(layer_i + 1))
 		else:
 			output = tf.matmul(current_input, W) + b
 		current_input = output
 
-	return z, current_input	
+	return tf.squeeze(z), tf.squeeze(current_input)
 
 # Perform feature compression to make the computations tractable
 clpVectorCompressed, clpVectorReconstruction = denseAutoEncoder(clpVector, dimensions=[1, options.compressedFeatureVectorSize])
@@ -376,7 +384,7 @@ reconstructionLossCLPVector = tf.reduce_sum(tf.square(clpVectorReconstruction - 
 
 # Optimizer
 loss = reconstructionLossLowerLayer + reconstructionLossCLPVector
-optimizer = tf.train.AdamOptimizer(1e-4).minimize(loss)
+optimizer = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(loss)
 
 # GPU config
 config = tf.ConfigProto()
@@ -441,6 +449,8 @@ clpFeatures = np.array(imFeatures)
 names = np.array(imNames)
 labels = np.array(imLabels)
 split = np.array(imSplit)
+
+print ("CLP Features shape: %s" % str(clpFeatures.shape))
 
 # Remove the previous variables
 imFeatures = None
