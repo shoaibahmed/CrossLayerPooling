@@ -32,6 +32,7 @@ parser = OptionParser()
 parser.add_option("-m", "--modelName", action="store", dest="modelName", default="ResNet-152", choices=["NASNet", "IncResV2", "ResNet-152"], help="Name of the model to be used for Cross-layer pooling")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size to be used")
 parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs")
+parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False, help="Debug flag to enable debugging (high verbosity)")
 
 parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=224, help="Image width for feeding into the network")
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=224, help="Image height for feeding into the network")
@@ -43,7 +44,7 @@ parser.add_option("--localRegionSize", action="store", type="int", dest="localRe
 parser.add_option("--useImageNetMean", action="store_true", dest="useImageNetMean", default=False, help="Use Image Net mean for normalization")
 parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", default=False, help="Whether to save computed features")
 
-parser.add_option("--dataFile", action="store", type="string", dest="dataFile", default="/netscratch/siddiqui/CrossLayerPooling/data/data.txt", help="Training data file")
+parser.add_option("--rootDirectory", action="store", type="string", dest="rootDirectory", default="./data/Plant_Seedings/", help="Directory containing the data")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
 
 parser.add_option("--numParallelLoaders", action="store", type="int", dest="numParallelLoaders", default=8, help="Number of parallel loaders to be used for data loading")
@@ -157,27 +158,64 @@ def parseFunction(filename, label, split):
 	return img, filename, label, split
 
 # A vector of filenames
-print ("Loading data from file: %s" % (options.dataFile))
-with open(options.dataFile) as f:
-	imageFileNames = f.readlines()
-	numItemsInDataset = len(imageFileNames)
-	imNames = []
-	imLabels = []
-	imSplit = []
-	for imName in imageFileNames:
-		imName = imName.strip().split(' ')
-		imNames.append(imName[0])
-		imLabels.append(int(imName[1]))
-		imSplit.append(int(imName[2]))
+print ("Loading data from directory: %s" % (options.rootDirectory))
+imNames = []
+imLabels = []
+imSplit = []
+imClasses = {}
+clsInstances = {}
+clsCounter = 0
+for root, dirs, files in os.walk(options.rootDirectory):
+	label = -1
+	clsName = 'N/A'
+	if "train" in root:
+		split = TRAIN
 
-	# imageFileNames = [x.strip().split(' ') for x in imageFileNames] # FileName and Label is separated by a space
-	imNames = tf.constant(imNames)
-	imLabels = tf.constant(imLabels)
-	imSplit = tf.constant(imSplit)
+		# Use the last part in the directory tree as the class label
+		clsName = root.split(os.sep)[-1]
+		if clsName == "train":
+			continue
+		if clsName not in imClasses:
+			imClasses[clsName] = clsCounter
+			clsCounter += 1
+		label = imClasses[clsName]
+	elif "test" in root:
+		split = TEST
+	else:
+		print ("Error: Unable to infer the split from directory (%s). Skipping directory." % (root))
+		continue
+		# print ("Error: Unable to infer the split (%s)" % (root))
+		# exit (-1)
+
+	# Class counters
+	if clsName not in clsInstances:
+		clsInstances[clsName] = 0
+
+	print ("Directory: %s | Split: %d | Class name: %s | Class label: %d" % (os.path.basename(root), split, clsName, label))
+	for file in files:
+		isImage = any([True if file.endswith(ext) else False for ext in [".jpg", ".jpeg", ".png"]])
+		if isImage:
+			fileName = str(os.path.abspath(os.path.join(root, file)))
+			imNames.append(fileName)
+			imLabels.append(label)
+			imSplit.append(split)
+			clsInstances[clsName] += 1
+			if options.debug:
+				print ("File: %s | Split: %d | Class name: %s | Class label: %d" % (fileName, split, clsName, label))
+
+print ("************** Dataset statistics **************")
+imSplit = np.array(imSplit)
+numFiles = imSplit.shape[0]
+print ("Number of files: %d | Number of train files: %d | Number of validation files: %d | Number of test files: %d" % (numFiles, np.sum(imSplit == TRAIN), np.sum(imSplit == VAL), np.sum(imSplit == TEST)))
+print ("Class instances:", clsInstances)
+
+imNames = tf.constant(imNames)
+imLabels = tf.constant(imLabels)
+imSplit = tf.constant(imSplit)
 
 dataset = tf.data.Dataset.from_tensor_slices((imNames, imLabels, imSplit))
 dataset = dataset.map(parseFunction, num_parallel_calls=options.numParallelLoaders)
-dataset = dataset.shuffle(buffer_size=numItemsInDataset, seed=0)
+dataset = dataset.shuffle(buffer_size=numFiles, seed=0)
 dataset = dataset.batch(options.batchSize)
 
 iterator = dataset.make_initializable_iterator()
