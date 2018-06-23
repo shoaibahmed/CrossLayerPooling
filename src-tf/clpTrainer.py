@@ -10,9 +10,6 @@ import os
 import cv2
 import time
 
-import default_inc_res_v2
-import resnet_v1
-
 from sklearn import linear_model
 from sklearn import svm
 
@@ -32,7 +29,7 @@ else:
 # Command line options
 parser = OptionParser()
 
-parser.add_option("-m", "--modelName", action="store", dest="modelName", default="NASNet", choices=["NASNet", "IncResV2", "ResNet-152"], help="Name of the model to be used for Cross-layer pooling")
+parser.add_option("-m", "--modelName", action="store", dest="modelName", default="ResNet-152", choices=["NASNet", "IncResV2", "ResNet-152"], help="Name of the model to be used for Cross-layer pooling")
 parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size to be used")
 parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs")
 
@@ -60,6 +57,26 @@ if not os.path.exists(options.pretrainedModelsDir):
 	print ("Warning: Pretrained models directory not found!")
 	os.makedirs(options.pretrainedModelsDir)
 	assert os.path.exists(options.pretrainedModelsDir)
+
+# Clone the repository if not already existent
+if not os.path.exists(os.path.join(options.pretrainedModelsDir, "models/research/slim")):
+	print ("Cloning TensorFlow models repository")
+	import git # gitpython
+
+	class Progress(git.remote.RemoteProgress):
+		def update(self, op_code, cur_count, max_count=None, message=''):
+			print (self._cur_line)
+
+	git.Repo.clone_from("https://github.com/tensorflow/models.git", os.path.join(options.pretrainedModelsDir, "models"), progress=Progress())
+	print ("Repository sucessfully cloned!")
+
+# Add the path to the tensorflow models repository
+sys.path.append(os.path.join(options.pretrainedModelsDir, "models/research/slim"))
+sys.path.append(os.path.join(options.pretrainedModelsDir, "models/research/slim/nets"))
+
+import inception_resnet_v2
+import resnet_v1
+import nasnet.nasnet as nasnet
 
 # Import the model
 if options.modelName == "NASNet":
@@ -177,13 +194,13 @@ with tf.name_scope('Model'):
 
 		# Create model
 		if options.model == "IncResV2":
-			arg_scope = default_inc_res_v2.inception_resnet_v2_arg_scope()
+			arg_scope = inception_resnet_v2.inception_resnet_v2_arg_scope()
 			with slim.arg_scope(arg_scope):
-				logits, aux_logits, end_points = default_inc_res_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
+				logits, aux_logits, end_points = inception_resnet_v2.inception_resnet_v2(scaledInputBatchImages, is_training=False)
 
 				# Get the lower layer and upper layer activations
-				lowerLayerActivations = end_points["s"]
-				upperLayerActivations = end_points["s"]
+				lowerLayerActivations = end_points["?"]
+				upperLayerActivations = end_points["?"]
 
 			# Create list of vars to restore before train op
 			variables_to_restore = slim.get_variables_to_restore(include=["InceptionResnetV2"])
