@@ -1,6 +1,7 @@
 import tensorflow as tf
 slim = tf.contrib.slim
 
+import pandas
 import numpy as np
 
 from optparse import OptionParser
@@ -13,6 +14,7 @@ import shutil
 
 from sklearn import linear_model
 from sklearn import svm
+from sklearn.decomposition import PCA
 
 TRAIN = 0
 VAL = 1
@@ -45,6 +47,7 @@ parser.add_option("--imageChannels", action="store", type="int", dest="imageChan
 
 parser.add_option("--featureSpacing", action="store", type="int", dest="featureSpacing", default=3, help="Number of channels in the feautre vector to skip from all sides")
 parser.add_option("--localRegionSize", action="store", type="int", dest="localRegionSize", default=1, help="Filter size for extraction of lower layer features")
+parser.add_option("--performPCAOnFeatures", action="store_true", dest="performPCAOnFeatures", default=False, help="Perform PCA on the computed features")
 
 parser.add_option("--useImageNetMean", action="store_true", dest="useImageNetMean", default=False, help="Use Image Net mean for normalization")
 parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", default=False, help="Whether to save computed features")
@@ -331,8 +334,8 @@ z = z / (1e-7 + norm(z));
 '''
 
 # Crop the features
-if LOCAL_REGION_SIZE > 1:
-	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1,LOCAL_REGION_SIZE,LOCAL_REGION_SIZE,1], [1,1,1,1], [1,1,1,1], 'SAME')
+if options.localRegionSize > 1:
+	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1, options.localRegionSize, options.localRegionSize, 1], [1, 1, 1, 1], [1, 1, 1, 1], 'SAME')
 
 lowerLayerActivations = lowerLayerActivations[:, options.featureSpacing : -options.featureSpacing, options.featureSpacing : -options.featureSpacing, :]
 upperLayerActivations = upperLayerActivations[:, options.featureSpacing : -options.featureSpacing, options.featureSpacing : -options.featureSpacing, :]
@@ -445,6 +448,14 @@ names = np.array(imNames)
 labels = np.array(imLabels)
 split = np.array(imSplit)
 
+if options.performPCAOnFeatures:
+	# Compress the whole CLP features
+	pca = PCA(n_components=1024)
+	print ("Dimensions before reduction:", clpFeatures.shape)
+	pca.fit(clpFeatures[split == TRAIN]) # Fit on train data
+	clpFeatures = pca.transform(clpFeatures) # Perform dimensioanlity reduction on all the features
+	print ("Dimensions after reduction:", clpFeatures.shape)
+
 # Remove the previous variables
 imFeatures = None
 imNames = None
@@ -503,16 +514,29 @@ if numTestExamples > 0:
 	testPredictions = clf.predict(testData[0])
 	with open(os.path.join(options.outputDir, "output.pkl"), "wb") as fid:
 		pickle.dump([testImageNames, testPredictions], fid)
-	with open(os.path.join(options.outputDir, "predictions.csv"), "w") as file:
-		file.write("%s,%s\n" % ("file", "species"))
-		for idx, imageName in enumerate(testImageNames):
-			pred = testPredictions[idx]
-			if not options.useLabelId:
-				pred = pred.decode("utf-8")
-			_, imageName = os.path.split(imageName) # Crop the complete path name
-			if options.useLabelId:
-				file.write("%s,%s,%d\n" % (imageName, imClassesToIdx[pred], pred))
-			else:
-				file.write("%s,%s\n" % (imageName, pred))
+
+	df = pandas.read_csv(os.path.join(options.rootDirectory, "sample_submission.csv"))
+	# df = df.set_index("file", drop = False)
+
+	for idx, imageName in enumerate(testImageNames):
+		pred = testPredictions[idx]
+		if not options.useLabelId:
+			pred = pred.decode("utf-8")
+		_, imageName = os.path.split(imageName) # Crop the complete path name
+		df.ix[df["file"] == imageName, "species"] = imClassesToIdx[pred] if options.useLabelId else pred
+
+	df.to_csv(os.path.join(options.outputDir, "submission.csv"), index=False, encoding='utf8')
+
+	# with open(os.path.join(options.outputDir, "predictions.csv"), "w") as file:
+	# 	file.write("%s,%s\n" % ("file", "species"))
+	# 	for idx, imageName in enumerate(testImageNames):
+	# 		pred = testPredictions[idx]
+	# 		if not options.useLabelId:
+	# 			pred = pred.decode("utf-8")
+	# 		_, imageName = os.path.split(imageName) # Crop the complete path name
+	# 		if options.useLabelId:
+	# 			file.write("%s,%s,%d\n" % (imageName, imClassesToIdx[pred], pred))
+	# 		else:
+	# 			file.write("%s,%s\n" % (imageName, pred))
 
 print ("Evaluation complete!")
