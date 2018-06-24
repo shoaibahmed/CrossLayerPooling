@@ -9,6 +9,7 @@ import tarfile
 import os
 import cv2
 import time
+import shutil
 
 from sklearn import linear_model
 from sklearn import svm
@@ -30,10 +31,14 @@ else:
 parser = OptionParser()
 
 parser.add_option("-m", "--modelName", action="store", dest="modelName", default="ResNet-152", choices=["NASNet", "IncResV2", "ResNet-152"], help="Name of the model to be used for Cross-layer pooling")
-parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size to be used")
-parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs")
+parser.add_option("-t", "--trainModel", action="store_true", dest="trainModel", default=False, help="Train model")
+parser.add_option("-c", "--testModel", action="store_true", dest="testModel", default=False, help="Test model")
 parser.add_option("-d", "--debug", action="store_true", dest="debug", default=False, help="Debug flag to enable debugging (high verbosity)")
 
+parser.add_option("--batchSize", action="store", type="int", dest="batchSize", default=1, help="Batch size to be used")
+parser.add_option("--useSGD", action="store_true", dest="useSGD", default=False, help="Use SGD instead of a Convex Optimizer")
+parser.add_option("--useLabelId", action="store_true", dest="useLabelId", default=False, help="Use label ID instead of the class name")
+parser.add_option("--numEpochs", action="store", type="int", dest="numEpochs", default=1, help="Number of epochs")
 parser.add_option("--imageWidth", action="store", type="int", dest="imageWidth", default=224, help="Image width for feeding into the network")
 parser.add_option("--imageHeight", action="store", type="int", dest="imageHeight", default=224, help="Image height for feeding into the network")
 parser.add_option("--imageChannels", action="store", type="int", dest="imageChannels", default=3, help="Number of channels in the image")
@@ -46,6 +51,8 @@ parser.add_option("--saveFeatures", action="store_true", dest="saveFeatures", de
 
 parser.add_option("--rootDirectory", action="store", type="string", dest="rootDirectory", default="./data/Plant_Seedings/", help="Directory containing the data")
 parser.add_option("--pretrainedModelsDir", action="store", type="string", dest="pretrainedModelsDir", default="./pretrained/", help="Directory containing the pretrained models")
+parser.add_option("--outputDir", action="store", type="string", dest="outputDir", default="./output/", help="Ouput directory to store the output")
+parser.add_option("--logsDir", action="store", type="string", dest="logsDir", default="./logs", help="Directory for saving logs")
 
 parser.add_option("--numParallelLoaders", action="store", type="int", dest="numParallelLoaders", default=8, help="Number of parallel loaders to be used for data loading")
 
@@ -135,10 +142,16 @@ else:
 	print ("Error: Model %s not found!" % options.modelName)
 	exit (-1)
 
+# Check if the pretrained directory exists
+if os.path.exists(options.outputDir):
+	print ("Warning: Output directory already exists. Removing previous directory.")
+	shutil.rmtree(options.outputDir)
+
+os.makedirs(options.outputDir)
+
 # Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
 USE_IMAGENET_MEAN = options.useImageNetMean
-SAVE_FEATURES = options.saveFeatures
 FEATURE_SPACING = options.featureSpacing # Leave these features from each side
 LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
 REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
@@ -178,7 +191,11 @@ for root, dirs, files in os.walk(options.rootDirectory):
 		if clsName not in imClasses:
 			imClasses[clsName] = clsCounter
 			clsCounter += 1
-		label = imClasses[clsName]
+		
+		if options.useLabelId:
+			label = imClasses[clsName]
+		else:
+			label = clsName
 	elif "test" in root:
 		split = TEST
 	else:
@@ -203,12 +220,21 @@ for root, dirs, files in os.walk(options.rootDirectory):
 			if options.debug:
 				print ("File: %s | Split: %d | Class name: %s | Class label: %d" % (fileName, split, clsName, label))
 
+# Class name to index
+imClassesToIdx = {v: k for k, v in imClasses.items()}
+
 print ("************** Dataset statistics **************")
 imSplit = np.array(imSplit)
 numFiles = imSplit.shape[0]
-print ("Number of files: %d | Number of train files: %d | Number of validation files: %d | Number of test files: %d" % (numFiles, np.sum(imSplit == TRAIN), np.sum(imSplit == VAL), np.sum(imSplit == TEST)))
+numTrainExamples = np.sum(imSplit == TRAIN)
+numValExamples = np.sum(imSplit == VAL)
+numTestExamples = np.sum(imSplit == TEST)
+print ("Total examples: %d | Training examples: %d | Validation examples: %d | Test examples: %d" % (numFiles, numTrainExamples, numValExamples, numTestExamples))
 print ("Class instances:", clsInstances)
 
+imNames = np.array(imNames)
+testImageNames = imNames[imSplit == TEST]
+print ("Test image names:", testImageNames[:3])
 imNames = tf.constant(imNames)
 imLabels = tf.constant(imLabels)
 imSplit = tf.constant(imSplit)
@@ -365,7 +391,7 @@ with tf.Session(config=config) as sess:
 	sess.run(tf.local_variables_initializer())
 
 	# Write the graph to file
-	summaryWriter = tf.summary.FileWriter("./logs", graph=tf.get_default_graph())
+	summaryWriter = tf.summary.FileWriter(options.logsDir, graph=tf.get_default_graph())
 
 	# Restore the model params
 	checkpointFileName = resNet152CheckpointFile if options.modelName == "ResNet-152" else incResV2CheckpointFile if options.modelName == "IncResV2" else nasCheckpointFile if options.modelName == "NASNet" else None
@@ -426,16 +452,21 @@ print (names[:10])
 print (labels[:10])
 print (split[:10])
 
-if SAVE_FEATURES:
+if options.saveFeatures:
 	print ("Saving features to file")
-	np.save("./data/imFeatures.npy", clpFeatures)
-	np.save("./data/imNames.npy", names)
-	np.save("./data/imLabels.npy", labels)
+	np.save(os.path.join(options.outputDir, "imFeatures.npy"), clpFeatures)
+	np.save(os.path.join(options.outputDir, "imNames.npy"), names)
+	np.save(os.path.join(options.outputDir, "imLabels.npy"), labels)
+	np.save(os.path.join(options.outputDir, "imSplit.npy"), split)
+	np.save(os.path.join(options.outputDir, "imClasses.npy"), imClasses)
 	print ("Saving complete!")
 
-print ("Training Linear Model with Hinge Loss")
-# clf = linear_model.SGDClassifier(n_jobs=-1)
-clf = svm.LinearSVC(C=10.0)
+if options.useSGD:
+	print ("Training Linear SVM with Hinge Loss using SGD Optimizer")
+	clf = linear_model.SGDClassifier(loss="hinge", penalty="l2", n_jobs=-1)
+else:
+	print ("Training Linear SVM with Hinge Loss using Convex Optimizer")
+	clf = svm.LinearSVC(C=10.0)
 
 # clf.fit(clpFeatures[:trainEndIndex], labels[:trainEndIndex])
 trainData = (clpFeatures[split == TRAIN], labels[split == TRAIN])
@@ -445,20 +476,35 @@ print ("Training complete!")
 trainAccuracy = clf.score(trainData[0], trainData[1])
 print ("Train accuracy: %f" % (trainAccuracy))
 
-if SAVE_FEATURES:
-	with open("./data/svm.pkl", "wb") as fid:
+if options.saveFeatures:
+	with open(os.path.join(options.outputDir, "svm.pkl"), "wb") as fid:
 		pickle.dump(clf, fid)
 
-print ("Evaluating validation accuracy")
-validationData = (clpFeatures[split == VAL], labels[split == VAL])
-print ("Number of images in validation set: %d" % (validationData[0].shape[0]))
-validationAccuracy = clf.score(validationData[0], validationData[1])
-print ("Validation accuracy: %f" % (validationAccuracy))
+if numValExamples > 0:
+	print ("Evaluating validation accuracy")
+	validationData = (clpFeatures[split == VAL], labels[split == VAL])
+	print ("Number of images in validation set: %d" % (validationData[0].shape[0]))
+	validationAccuracy = clf.score(validationData[0], validationData[1])
+	print ("Validation accuracy: %f" % (validationAccuracy))
 
-print ("Evaluating test accuracy")
-testData = (clpFeatures[split == TEST], labels[split == TEST])
-print ("Number of images in test set: %d" % (testData[0].shape[0]))
-testAccuracy = clf.score(testData[0], testData[1])
-print ("Test accuracy: %f" % (testAccuracy))
+if numTestExamples > 0:
+	print ("Evaluating test accuracy")
+	testData = (clpFeatures[split == TEST], labels[split == TEST])
+	print ("Number of images in test set: %d" % (testData[0].shape[0]))
+	testAccuracy = clf.score(testData[0], testData[1])
+	print ("Test accuracy: %f" % (testAccuracy))
+
+	# Save test predictions to file
+	print ("Number of test images: %d" % len(testImageNames))
+	testPredictions = clf.predict(testData[0])
+	with open(os.path.join(options.outputDir, "output.pkl"), "wb") as fid:
+		pickle.dump(clf, [testImageNames, testPredictions])
+	with open(os.path.join(options.outputDir, "predictions.csv"), "w") as file:
+		for idx, imageName in enumerate(testImageNames):
+			pred = testPredictions[idx]
+			if options.useLabelId:
+				file.write("%s,%s,%d" % (imageName, imClassesToIdx[pred], pred))
+			else:
+				file.write("%s,%s,%d" % (imageName, clf.classes_[pred], pred))
 
 print ("Evaluation complete!")
