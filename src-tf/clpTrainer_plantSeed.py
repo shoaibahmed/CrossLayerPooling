@@ -152,10 +152,8 @@ os.makedirs(options.outputDir)
 # Define params
 IMAGENET_MEAN = [123.68, 116.779, 103.939] # RGB
 USE_IMAGENET_MEAN = options.useImageNetMean
-FEATURE_SPACING = options.featureSpacing # Leave these features from each side
-LOCAL_REGION_SIZE = options.localRegionSize # Use this filter size to capture features
-REGION_SIZE_PADDING = int((LOCAL_REGION_SIZE - 1) / 2)
-LOCAL_REGION_DIM = LOCAL_REGION_SIZE * LOCAL_REGION_SIZE
+REGION_SIZE_PADDING = int((options.localRegionSize - 1) / 2)
+LOCAL_REGION_DIM = options.localRegionSize * options.localRegionSize
 
 # Reads an image from a file, decodes it into a dense tensor
 def parseFunction(filename, label, split):
@@ -179,7 +177,7 @@ imClasses = {}
 clsInstances = {}
 clsCounter = 0
 for root, dirs, files in os.walk(options.rootDirectory):
-	label = -1
+	label = -1 if options.useLabelId else 'N/A'
 	clsName = 'N/A'
 	if "train" in root:
 		split = TRAIN
@@ -208,7 +206,10 @@ for root, dirs, files in os.walk(options.rootDirectory):
 	if clsName not in clsInstances:
 		clsInstances[clsName] = 0
 
-	print ("Directory: %s | Split: %d | Class name: %s | Class label: %d" % (os.path.basename(root), split, clsName, label))
+	if options.useLabelId:
+		print ("Directory: %s | Split: %d | Class name: %s | Class label: %d" % (os.path.basename(root), split, clsName, label))
+	else:
+		print ("Directory: %s | Split: %d | Class name: %s | Class label: %s" % (os.path.basename(root), split, clsName, label))
 	for file in files:
 		isImage = any([True if file.endswith(ext) else False for ext in [".jpg", ".jpeg", ".png"]])
 		if isImage:
@@ -218,7 +219,10 @@ for root, dirs, files in os.walk(options.rootDirectory):
 			imSplit.append(split)
 			clsInstances[clsName] += 1
 			if options.debug:
-				print ("File: %s | Split: %d | Class name: %s | Class label: %d" % (fileName, split, clsName, label))
+				if options.useLabelId:
+					print ("File: %s | Split: %d | Class name: %s | Class label: %d" % (fileName, split, clsName, label))
+				else:
+					print ("File: %s | Split: %d | Class name: %s | Class label: %s" % (fileName, split, clsName, label))
 
 # Class name to index
 imClassesToIdx = {v: k for k, v in imClasses.items()}
@@ -330,8 +334,8 @@ z = z / (1e-7 + norm(z));
 if LOCAL_REGION_SIZE > 1:
 	lowerLayerActivations = tf.extract_image_patches(lowerLayerActivations, [1,LOCAL_REGION_SIZE,LOCAL_REGION_SIZE,1], [1,1,1,1], [1,1,1,1], 'SAME')
 
-lowerLayerActivations = lowerLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
-upperLayerActivations = upperLayerActivations[:, FEATURE_SPACING : -FEATURE_SPACING, FEATURE_SPACING : -FEATURE_SPACING, :]
+lowerLayerActivations = lowerLayerActivations[:, options.featureSpacing : -options.featureSpacing, options.featureSpacing : -options.featureSpacing, :]
+upperLayerActivations = upperLayerActivations[:, options.featureSpacing : -options.featureSpacing, options.featureSpacing : -options.featureSpacing, :]
 
 numChannelsLowerLayer = lowerLayerActivations.get_shape()[-1]
 numChannelsUpperLayer = upperLayerActivations.get_shape()[-1]
@@ -498,13 +502,17 @@ if numTestExamples > 0:
 	print ("Number of test images: %d" % len(testImageNames))
 	testPredictions = clf.predict(testData[0])
 	with open(os.path.join(options.outputDir, "output.pkl"), "wb") as fid:
-		pickle.dump(clf, [testImageNames, testPredictions])
+		pickle.dump([testImageNames, testPredictions], fid)
 	with open(os.path.join(options.outputDir, "predictions.csv"), "w") as file:
+		file.write("%s,%s\n" % ("file", "species"))
 		for idx, imageName in enumerate(testImageNames):
 			pred = testPredictions[idx]
+			if not options.useLabelId:
+				pred = pred.decode("utf-8")
+			_, imageName = os.path.split(imageName) # Crop the complete path name
 			if options.useLabelId:
-				file.write("%s,%s,%d" % (imageName, imClassesToIdx[pred], pred))
+				file.write("%s,%s,%d\n" % (imageName, imClassesToIdx[pred], pred))
 			else:
-				file.write("%s,%s,%d" % (imageName, clf.classes_[pred], pred))
+				file.write("%s,%s\n" % (imageName, pred))
 
 print ("Evaluation complete!")
