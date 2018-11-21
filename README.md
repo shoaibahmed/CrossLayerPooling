@@ -22,5 +22,29 @@ This repository provides a basic implementation of Cross-layer pooling algorithm
 <li>Add code profiling</li>
 </ol>
 
-<br/><br/> Author: <b>Shoaib Ahmed Siddiqui</b>
-<br/> Email: <b>shoaib_ahmed.siddiqui@dfki.de</b>
+## Cite
+
+```
+@article{doi:10.1093/icesjms/fsx109,
+author = {Siddiqui, Shoaib Ahmed and Salman, Ahmad and Malik, Muhammad Imran and Shafait, Faisal and Mian, Ajmal and Shortis, Mark R and Harvey, Euan S and Handling editor: Howard Browman},
+title = {Automatic fish species classification in underwater videos: exploiting pre-trained deep neural network models to compensate for limited labelled data},
+journal = {ICES Journal of Marine Science},
+volume = {75},
+number = {1},
+pages = {374-389},
+year = {2018},
+doi = {10.1093/icesjms/fsx109},
+URL = {http://dx.doi.org/10.1093/icesjms/fsx109},
+eprint = {/oup/backfile/content_public/journal/icesjms/75/1/10.1093_icesjms_fsx109/1/fsx109.pdf}
+}
+```
+
+## License:
+
+MIT
+
+## Issues/Feedback:
+
+In case of any issues, feel free to drop me an email or open an issue on the repository.
+
+Email: **shoaib_ahmed.siddiqui@dfki.de**
